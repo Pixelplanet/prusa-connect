@@ -75,6 +75,8 @@ type module struct {
 	dataDir    string
 	mqttClient mqtt.Client
 	mqttUp     bool
+	mqttBroker string
+	mqttError  string
 	plugs      map[string]*PlugTelemetry
 	configs    map[string]DeviceConfig
 	trackers   map[string]*autoOffTracker
@@ -287,6 +289,27 @@ func normalizeTopic(t string) string {
 
 // --- MQTT ---
 
+func normalizeBrokerURL(raw string) string {
+	b := strings.TrimSpace(raw)
+	if b == "" {
+		return ""
+	}
+	if strings.HasPrefix(b, "mqtt://") {
+		b = "tcp://" + strings.TrimPrefix(b, "mqtt://")
+	} else if strings.HasPrefix(b, "mqtts://") {
+		b = "ssl://" + strings.TrimPrefix(b, "mqtts://")
+	} else if !strings.Contains(b, "://") {
+		b = "tcp://" + b
+	}
+	// If tcp://host without port, append :1883.
+	if after, ok := strings.CutPrefix(b, "tcp://"); ok && !strings.Contains(after, ":") {
+		b += ":1883"
+	} else if after, ok := strings.CutPrefix(b, "ssl://"); ok && !strings.Contains(after, ":") {
+		b += ":8883"
+	}
+	return b
+}
+
 func (m *module) disconnectMQTT() {
 	m.mu.Lock()
 	c := m.mqttClient
@@ -298,15 +321,11 @@ func (m *module) disconnectMQTT() {
 	}
 }
 
-func (m *module) reconnectMQTT(s Settings) {
-	m.disconnectMQTT()
-	if strings.TrimSpace(s.MQTTBroker) == "" {
-		return
-	}
-
+func (m *module) buildMQTTOptions(s Settings, brokerURL, clientID string) *mqtt.ClientOptions {
 	opts := mqtt.NewClientOptions().
-		AddBroker(s.MQTTBroker).
-		SetClientID(s.MQTTClientID).
+		AddBroker(brokerURL).
+		SetClientID(clientID).
+		SetConnectTimeout(5 * time.Second).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
 		SetConnectRetryInterval(5 * time.Second)
@@ -315,10 +334,29 @@ func (m *module) reconnectMQTT(s Settings) {
 		opts.SetUsername(s.MQTTUsername)
 		opts.SetPassword(s.MQTTPassword)
 	}
+	return opts
+}
+
+func (m *module) reconnectMQTT(s Settings) {
+	m.disconnectMQTT()
+	brokerURL := normalizeBrokerURL(s.MQTTBroker)
+	m.mu.Lock()
+	m.mqttBroker = brokerURL
+	m.mqttError = ""
+	m.mu.Unlock()
+
+	if brokerURL == "" {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "%s: connecting to MQTT broker %s (client_id=%s)\n", name, brokerURL, s.MQTTClientID)
+
+	opts := m.buildMQTTOptions(s, brokerURL, s.MQTTClientID)
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		m.mu.Lock()
 		m.mqttUp = true
+		m.mqttError = ""
 		topics := make([]string, 0, len(m.configs))
 		for _, cfg := range m.configs {
 			if cfg.TasmotaTopic != "" {
@@ -335,14 +373,21 @@ func (m *module) reconnectMQTT(s Settings) {
 		for _, t := range topics {
 			c.Publish("cmnd/"+t+"/Power", 0, false, "")
 		}
-		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", name, s.MQTTBroker)
+		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", name, brokerURL)
 	})
 
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		m.mu.Lock()
 		m.mqttUp = false
+		if err != nil {
+			m.mqttError = err.Error()
+		}
 		m.mu.Unlock()
 		fmt.Fprintf(os.Stderr, "%s: MQTT connection lost: %v\n", name, err)
+	})
+
+	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
+		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", name, brokerURL)
 	})
 
 	client := mqtt.NewClient(opts)
@@ -351,10 +396,64 @@ func (m *module) reconnectMQTT(s Settings) {
 	m.mu.Unlock()
 
 	go func() {
-		if tok := client.Connect(); tok.Wait() && tok.Error() != nil {
+		tok := client.Connect()
+		if tok.WaitTimeout(10*time.Second) && tok.Error() != nil {
+			m.mu.Lock()
+			m.mqttError = tok.Error().Error()
+			m.mu.Unlock()
 			fmt.Fprintf(os.Stderr, "%s: initial MQTT connect failed (will retry): %v\n", name, tok.Error())
 		}
 	}()
+}
+
+func (m *module) testBroker() (bool, string, string) {
+	s := m.settings()
+	brokerURL := normalizeBrokerURL(s.MQTTBroker)
+	if brokerURL == "" {
+		return false, "", "mqtt_broker is not configured"
+	}
+
+	m.mu.RLock()
+	up := m.mqttUp
+	c := m.mqttClient
+	m.mu.RUnlock()
+
+	if up && c != nil && c.IsConnected() {
+		return true, brokerURL, ""
+	}
+
+	// Try a fresh one-shot test connection so we get the immediate, exact error.
+	testOpts := mqtt.NewClientOptions().
+		AddBroker(brokerURL).
+		SetClientID(fmt.Sprintf("%s-test-%d", s.MQTTClientID, time.Now().UnixNano()%10000)).
+		SetConnectTimeout(5 * time.Second).
+		SetAutoReconnect(false).
+		SetConnectRetry(false)
+	if s.MQTTUsername != "" {
+		testOpts.SetUsername(s.MQTTUsername)
+		testOpts.SetPassword(s.MQTTPassword)
+	}
+
+	tc := mqtt.NewClient(testOpts)
+	tok := tc.Connect()
+	if !tok.WaitTimeout(6 * time.Second) {
+		errMsg := "connection timed out after 6s"
+		m.mu.Lock()
+		m.mqttError = errMsg
+		m.mu.Unlock()
+		return false, brokerURL, errMsg
+	}
+	if err := tok.Error(); err != nil {
+		m.mu.Lock()
+		m.mqttError = err.Error()
+		m.mu.Unlock()
+		return false, brokerURL, err.Error()
+	}
+	tc.Disconnect(100)
+
+	// If the one-shot succeeded, trigger reconnect on the main client too.
+	m.reconnectMQTT(s)
+	return true, brokerURL, ""
 }
 
 func (m *module) onMQTTMessage(_ mqtt.Client, msg mqtt.Message) {
@@ -588,6 +687,8 @@ type statusResponse struct {
 	DeviceID             string         `json:"device_id"`
 	MQTTConfigured       bool           `json:"mqtt_configured"`
 	MQTTConnected        bool           `json:"mqtt_connected"`
+	MQTTBroker           string         `json:"mqtt_broker,omitempty"`
+	MQTTError            string         `json:"mqtt_error,omitempty"`
 	Config               DeviceConfig   `json:"config"`
 	Plug                 *PlugTelemetry `json:"plug,omitempty"`
 	CanTurnOff           bool           `json:"can_turn_off"`
@@ -617,6 +718,8 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 
 	m.mu.RLock()
 	mqttUp := m.mqttUp
+	mqttBroker := m.mqttBroker
+	mqttErr := m.mqttError
 	var plugCopy *PlugTelemetry
 	if cfg.TasmotaTopic != "" {
 		if p, ok := m.plugs[cfg.TasmotaTopic]; ok {
@@ -643,6 +746,8 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		DeviceID:            deviceID,
 		MQTTConfigured:      strings.TrimSpace(s.MQTTBroker) != "",
 		MQTTConnected:       mqttUp,
+		MQTTBroker:          mqttBroker,
+		MQTTError:           mqttErr,
 		Config:              cfg,
 		Plug:                plugCopy,
 		CanTurnOff:          safety.CanTurnOff,
@@ -657,6 +762,30 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 
 func (m *module) routes() http.Handler {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /broker/status", func(w http.ResponseWriter, _ *http.Request) {
+		s := m.settings()
+		m.mu.RLock()
+		up := m.mqttUp
+		broker := m.mqttBroker
+		errMsg := m.mqttError
+		m.mu.RUnlock()
+		answer(w, http.StatusOK, map[string]any{
+			"configured": strings.TrimSpace(s.MQTTBroker) != "",
+			"connected":  up,
+			"broker":     broker,
+			"error":      errMsg,
+		})
+	})
+
+	mux.HandleFunc("POST /broker/test", func(w http.ResponseWriter, _ *http.Request) {
+		ok, broker, errMsg := m.testBroker()
+		answer(w, http.StatusOK, map[string]any{
+			"ok":     ok,
+			"broker": broker,
+			"error":  errMsg,
+		})
+	})
 
 	mux.HandleFunc("GET /devices/{device_id}", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")

@@ -112,7 +112,13 @@
     </p>
   {:else if status && !status.mqtt_connected}
     <p class="text-xs text-destructive">
-      {t('tasmota-power.section.brokerOffline')}
+      {#if status.mqtt_error}
+        {t('tasmota-power.section.brokerOfflineReason', {
+          reason: status.mqtt_error,
+        })}
+      {:else}
+        {t('tasmota-power.section.brokerOffline')}
+      {/if}
     </p>
   {/if}
 

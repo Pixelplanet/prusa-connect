@@ -6,6 +6,30 @@
     "description": "Tasmota MQTT smart plug control and monitoring per printer."
   },
   "paths": {
+    "/broker/status": {
+      "get": {
+        "operationId": "get-broker-status",
+        "summary": "Get MQTT broker connection status and last error",
+        "description": "Returns the normalized MQTT broker address, current connection status, and the last connection error if disconnected.",
+        "responses": {
+          "200": {
+            "description": "MQTT broker status"
+          }
+        }
+      }
+    },
+    "/broker/test": {
+      "post": {
+        "operationId": "test-broker-connection",
+        "summary": "Test MQTT broker connectivity",
+        "description": "Tests connecting to the configured MQTT broker and returns whether the connection succeeded or the exact error.",
+        "responses": {
+          "200": {
+            "description": "MQTT broker test result"
+          }
+        }
+      }
+    },
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",

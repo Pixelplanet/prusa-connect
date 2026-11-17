@@ -3,6 +3,7 @@ import { defineModule } from '@prusa/connect-ui/slots';
 import { holdHost } from './host';
 import PowerSection from './power-section.svelte';
 import PowerCard from './power-card.svelte';
+import PowerSettings from './power-settings.svelte';
 import powerAction from './power-action';
 import './styles.css';
 
@@ -12,4 +13,5 @@ export default defineModule((host) => {
   host.register.deviceSection('power-plug', PowerSection);
   host.register.deviceCard('power-status', PowerCard);
   host.register.deviceAction('toggle-power', powerAction);
+  host.register.settings('mqtt-settings', PowerSettings);
 });
