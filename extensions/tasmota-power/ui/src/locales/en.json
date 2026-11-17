@@ -1,29 +1,32 @@
 {
-  "tasmota-power": {
-    "section": {
-      "title": "Tasmota Power Plug",
-      "brokerUnconfigured": "MQTT broker not configured. Set mqtt_broker in Settings -> Extensions -> Tasmota Power.",
-      "brokerOffline": "MQTT broker disconnected",
-      "plugOn": "Plug ON",
-      "plugOff": "Plug OFF",
-      "plugUnknown": "Plug state unknown",
-      "turnOn": "Turn On",
-      "turnOff": "Turn Off",
-      "autoOffLabel": "Turn printer off when print finishes",
-      "autoOffPending": "Auto-off in {seconds}s",
-      "topicLabel": "Tasmota Topic",
-      "topicPlaceholder": "e.g. tasmota_mk4",
-      "saveTopic": "Save",
-      "watts": "{watts} W"
-    },
-    "card": {
-      "on": "Plug: ON",
-      "onWatts": "Plug: ON · {watts} W",
-      "off": "Plug: OFF",
-      "autoOff": "Auto-off armed"
-    },
-    "action": {
-      "noTopic": "No Tasmota topic configured for this printer"
-    }
-  }
+  "_meta.language": "English",
+  "tasmota-power.section.title": "Tasmota Power Plug",
+  "tasmota-power.section.brokerUnconfigured": "MQTT broker not configured. Set mqtt_broker in Settings -> Extensions -> Tasmota Power.",
+  "tasmota-power.section.brokerOffline": "MQTT broker disconnected",
+  "tasmota-power.section.brokerOfflineReason": "MQTT broker disconnected: {reason}",
+  "tasmota-power.section.plugOn": "Plug ON",
+  "tasmota-power.section.plugOff": "Plug OFF",
+  "tasmota-power.section.plugUnknown": "Plug state unknown",
+  "tasmota-power.section.turnOn": "Turn On",
+  "tasmota-power.section.turnOff": "Turn Off",
+  "tasmota-power.section.autoOffLabel": "Turn printer off when print finishes",
+  "tasmota-power.section.autoOffPending": "Auto-off in {seconds}s",
+  "tasmota-power.section.topicLabel": "Tasmota Topic",
+  "tasmota-power.section.topicPlaceholder": "e.g. tasmota_mk4",
+  "tasmota-power.section.saveTopic": "Save",
+  "tasmota-power.section.watts": "{watts} W",
+  "tasmota-power.card.on": "Plug: ON",
+  "tasmota-power.card.onWatts": "Plug: ON · {watts} W",
+  "tasmota-power.card.off": "Plug: OFF",
+  "tasmota-power.card.autoOff": "Auto-off armed",
+  "tasmota-power.action.noTopic": "No Tasmota topic configured for this printer",
+  "tasmota-power.settings.title": "MQTT Broker Status",
+  "tasmota-power.settings.broker": "Configured broker: {broker}",
+  "tasmota-power.settings.notConfigured": "No mqtt_broker configured yet. Set it in this extension's Configuration tab.",
+  "tasmota-power.settings.connected": "Connected",
+  "tasmota-power.settings.disconnected": "Disconnected",
+  "tasmota-power.settings.testButton": "Test Connection",
+  "tasmota-power.settings.testing": "Testing...",
+  "tasmota-power.settings.testOk": "Connection to MQTT broker succeeded!",
+  "tasmota-power.settings.testFail": "Connection failed: {error}"
 }

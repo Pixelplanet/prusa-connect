@@ -60,3 +60,6 @@ ui:
         title: Toggle Power
         icon: wrench
         destructive: false
+    settings:
+      - id: mqtt-settings
+        title: MQTT Connection

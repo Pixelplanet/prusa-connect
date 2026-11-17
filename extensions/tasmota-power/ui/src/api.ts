@@ -22,6 +22,8 @@ export interface PowerStatus {
   device_id: string;
   mqtt_configured: boolean;
   mqtt_connected: boolean;
+  mqtt_broker?: string;
+  mqtt_error?: string;
   config: DeviceConfig;
   plug?: PlugTelemetry;
   can_turn_off: boolean;
@@ -32,6 +34,35 @@ export interface PowerStatus {
   auto_off_remaining_sec: number;
   default_cooldown_sec: number;
 }
+
+export interface BrokerStatus {
+  configured: boolean;
+  connected: boolean;
+  broker?: string;
+  error?: string;
+}
+
+export interface BrokerTestResult {
+  ok: boolean;
+  broker?: string;
+  error?: string;
+}
+
+const opGetBrokerStatus: Operation = {
+  id: 'get-broker-status',
+  method: 'GET',
+  path: `${BASE}/broker/status`,
+  response: 'json',
+  anonymous: false,
+};
+
+const opTestBroker: Operation = {
+  id: 'test-broker-connection',
+  method: 'POST',
+  path: `${BASE}/broker/test`,
+  response: 'json',
+  anonymous: false,
+};
 
 const opGetStatus: Operation = {
   id: 'get-device-power',
@@ -71,6 +102,11 @@ const opPostAutoOff: Operation = {
 export function createApi(host: Pick<ModuleHost, 'client'>) {
   const t = host.client.transport;
   return {
+    getBrokerStatus: (signal?: AbortSignal) =>
+      t.call<BrokerStatus>(opGetBrokerStatus, {}, signal),
+
+    testBroker: () => t.call<BrokerTestResult>(opTestBroker, {}),
+
     getStatus: (deviceId: string, signal?: AbortSignal) =>
       t.call<PowerStatus>(opGetStatus, { path: { device_id: deviceId } }, signal),
 
