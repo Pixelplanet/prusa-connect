@@ -30,6 +30,18 @@
         }
       }
     },
+    "/discover": {
+      "post": {
+        "operationId": "discover-tasmota-plugs",
+        "summary": "Probe MQTT for online Tasmota plugs",
+        "description": "Publishes a status query to Tasmota's group topic (cmnd/tasmotas/Power) and returns all discovered Tasmota plugs.",
+        "responses": {
+          "200": {
+            "description": "List of discovered Tasmota plugs"
+          }
+        }
+      }
+    },
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",
