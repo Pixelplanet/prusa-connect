@@ -201,7 +201,7 @@ func (m *module) loadAllConfigs(ctx context.Context) {
 			continue
 		}
 		var cfg DeviceConfig
-		if err := json.Unmarshal(val.Value, &cfg); err != nil {
+		if err := json.Unmarshal(val.Bytes, &cfg); err != nil {
 			continue
 		}
 		deviceID := strings.TrimPrefix(string(k), stateKeyPrefix)
@@ -228,7 +228,7 @@ func (m *module) getConfig(ctx context.Context, deviceID string) (DeviceConfig, 
 		}
 		return DeviceConfig{}, err
 	}
-	if err := json.Unmarshal(val.Value, &cfg); err != nil {
+	if err := json.Unmarshal(val.Bytes, &cfg); err != nil {
 		return DeviceConfig{}, err
 	}
 	m.mu.Lock()
