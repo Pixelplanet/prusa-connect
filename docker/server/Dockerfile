@@ -231,6 +231,7 @@ RUN export GOOS="$TARGETOS" GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" && \
 # The Tasmota power plug release, laid out the same way.
 COPY --from=extensions-builder /app/extensions/tasmota-power/ui/dist ./extensions/tasmota-power/ui/dist
 RUN BINARY="/tmp/tasmota-power_$(go env GOOS)_$(go env GOARCH)" && \
+    go -C extensions/tasmota-power mod tidy && \
     CGO_ENABLED=0 go -C extensions/tasmota-power build -o "$BINARY" . && \
     sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist "$BINARY" /opt/modules/tasmota-power
 
