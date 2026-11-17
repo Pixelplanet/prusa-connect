@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,6 @@ import (
 	"github.com/prusa3d/prusa-connect/sdk/extension"
 	"github.com/prusa3d/prusa-connect/sdk/fault"
 	"github.com/prusa3d/prusa-connect/sdk/routesapi"
-	"github.com/prusa3d/prusa-connect/sdk/stateapi"
 	"github.com/prusa3d/prusa-connect/sdk/wire"
 	"github.com/prusa3d/prusa-connect/sdk/wirerpc"
 )
@@ -29,7 +29,7 @@ const (
 	release = extension.Version("0.1.0")
 
 	defaultCooldownSec = 120
-	stateKeyPrefix     = "device/"
+	configsFileName    = "configs.json"
 )
 
 //go:embed openapi.json
@@ -68,11 +68,11 @@ type autoOffTracker struct {
 
 type module struct {
 	devices *deviceapi.Client
-	state   *stateapi.Client
 
 	held atomic.Pointer[Settings]
 
 	mu         sync.RWMutex
+	dataDir    string
 	mqttClient mqtt.Client
 	mqttUp     bool
 	plugs      map[string]*PlugTelemetry
@@ -83,7 +83,6 @@ type module struct {
 func newModule(conn *wirerpc.Conn) *module {
 	m := &module{
 		devices:  deviceapi.NewClient(conn),
-		state:    stateapi.NewClient(conn),
 		plugs:    make(map[string]*PlugTelemetry),
 		configs:  make(map[string]DeviceConfig),
 		trackers: make(map[string]*autoOffTracker),
@@ -142,7 +141,7 @@ func run() error {
 					Serves:   []wirerpc.Method{wirerpc.MethodConfigure},
 				}, openAPI)
 			},
-			wirerpc.MethodConfigure: wirerpc.Configure(func(cctx context.Context, sent Settings) error {
+			wirerpc.MethodConfigure: wirerpc.ConfigureGranted(func(_ context.Context, sent Settings, grants wirerpc.Grants) error {
 				if sent.MQTTClientID == "" {
 					sent.MQTTClientID = "prusa-connect-tasmota"
 				}
@@ -150,6 +149,10 @@ func run() error {
 					sent.AutoOffCooldownSec = 0
 				}
 				mod.held.Store(&sent)
+				if grants.Data != "" {
+					mod.setDataDir(grants.Data)
+					mod.loadAllConfigs()
+				}
 				mod.reconnectMQTT(sent)
 				return nil
 			}),
@@ -168,15 +171,13 @@ func run() error {
 
 	mod = newModule(conn)
 
-	// Load persisted device configs and start background auto-off loop once the pipe is serving.
+	// Start background auto-off loop once the pipe is serving.
 	go func() {
-		// Small delay to ensure host wire session is ready for outgoing calls.
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(500 * time.Millisecond):
 		}
-		mod.loadAllConfigs(ctx)
 		mod.autoOffLoop(ctx)
 	}()
 
@@ -187,71 +188,86 @@ func run() error {
 	return nil
 }
 
-// --- State Persistence ---
+// --- State Persistence (in grants.Data) ---
 
-func (m *module) loadAllConfigs(ctx context.Context) {
-	keys, err := m.state.List(ctx, stateapi.Key(stateKeyPrefix))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: list configs: %v\n", name, err)
+func (m *module) setDataDir(dir string) {
+	m.mu.Lock()
+	m.dataDir = dir
+	m.mu.Unlock()
+}
+
+func (m *module) loadAllConfigs() {
+	m.mu.RLock()
+	dir := m.dataDir
+	m.mu.RUnlock()
+	if dir == "" {
 		return
 	}
-	for _, k := range keys {
-		val, err := m.state.Get(ctx, k)
-		if err != nil {
-			continue
+
+	raw, err := os.ReadFile(filepath.Join(dir, configsFileName))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "%s: read configs: %v\n", name, err)
 		}
-		var cfg DeviceConfig
-		if err := json.Unmarshal(val.Bytes, &cfg); err != nil {
-			continue
-		}
-		deviceID := strings.TrimPrefix(string(k), stateKeyPrefix)
-		m.mu.Lock()
-		m.configs[deviceID] = cfg
-		m.mu.Unlock()
+		return
+	}
+
+	var loaded map[string]DeviceConfig
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: parse configs: %v\n", name, err)
+		return
+	}
+
+	m.mu.Lock()
+	for id, cfg := range loaded {
+		m.configs[id] = cfg
+	}
+	m.mu.Unlock()
+
+	for _, cfg := range loaded {
 		if cfg.TasmotaTopic != "" {
 			m.queryPlugState(cfg.TasmotaTopic)
 		}
 	}
 }
 
-func (m *module) getConfig(ctx context.Context, deviceID string) (DeviceConfig, error) {
+func (m *module) getConfig(_ context.Context, deviceID string) (DeviceConfig, error) {
 	m.mu.RLock()
-	cfg, ok := m.configs[deviceID]
+	cfg := m.configs[deviceID]
 	m.mu.RUnlock()
-	if ok {
-		return cfg, nil
-	}
-	val, err := m.state.Get(ctx, stateapi.Key(stateKeyPrefix+deviceID))
-	if err != nil {
-		if errors.Is(err, stateapi.ErrNoRecord) {
-			return DeviceConfig{}, nil
-		}
-		return DeviceConfig{}, err
-	}
-	if err := json.Unmarshal(val.Bytes, &cfg); err != nil {
-		return DeviceConfig{}, err
-	}
-	m.mu.Lock()
-	m.configs[deviceID] = cfg
-	m.mu.Unlock()
 	return cfg, nil
 }
 
-func (m *module) saveConfig(ctx context.Context, deviceID string, cfg DeviceConfig) error {
+func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig) error {
 	cfg.TasmotaTopic = normalizeTopic(cfg.TasmotaTopic)
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	if _, err := m.state.Put(ctx, stateapi.Key(stateKeyPrefix+deviceID), raw); err != nil {
-		return err
-	}
+
 	m.mu.Lock()
 	m.configs[deviceID] = cfg
 	if !cfg.AutoOffAfterPrint {
 		delete(m.trackers, deviceID)
 	}
+	dir := m.dataDir
+	snapshot := make(map[string]DeviceConfig, len(m.configs))
+	for k, v := range m.configs {
+		snapshot[k] = v
+	}
 	m.mu.Unlock()
+
+	if dir != "" {
+		raw, err := json.MarshalIndent(snapshot, "", "  ")
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, configsFileName)
+		tmp := target + ".tmp"
+		if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, target); err != nil {
+			return err
+		}
+	}
+
 	if cfg.TasmotaTopic != "" {
 		m.queryPlugState(cfg.TasmotaTopic)
 	}
