@@ -10,6 +10,8 @@ export interface DeviceConfig {
 }
 
 export interface PlugTelemetry {
+  topic?: string;
+  friendly_name?: string;
   power: 'ON' | 'OFF' | 'UNKNOWN';
   online?: boolean;
   power_watts?: number;
@@ -26,6 +28,7 @@ export interface PowerStatus {
   mqtt_error?: string;
   config: DeviceConfig;
   plug?: PlugTelemetry;
+  discovered_plugs?: PlugTelemetry[];
   can_turn_off: boolean;
   lock_reason?: string;
   printer_connected: boolean;
@@ -60,6 +63,14 @@ const opTestBroker: Operation = {
   id: 'test-broker-connection',
   method: 'POST',
   path: `${BASE}/broker/test`,
+  response: 'json',
+  anonymous: false,
+};
+
+const opDiscover: Operation = {
+  id: 'discover-tasmota-plugs',
+  method: 'POST',
+  path: `${BASE}/discover`,
   response: 'json',
   anonymous: false,
 };
@@ -106,6 +117,9 @@ export function createApi(host: Pick<ModuleHost, 'client'>) {
       t.call<BrokerStatus>(opGetBrokerStatus, {}, signal),
 
     testBroker: () => t.call<BrokerTestResult>(opTestBroker, {}),
+
+    discoverPlugs: () =>
+      t.call<{ plugs: PlugTelemetry[] }>(opDiscover, {}),
 
     getStatus: (deviceId: string, signal?: AbortSignal) =>
       t.call<PowerStatus>(opGetStatus, { path: { device_id: deviceId } }, signal),

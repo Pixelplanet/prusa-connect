@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,12 +54,14 @@ type DeviceConfig struct {
 
 // PlugTelemetry holds live MQTT state for a Tasmota topic.
 type PlugTelemetry struct {
-	Power       string     `json:"power"`        // "ON", "OFF", or "UNKNOWN"
-	Online      *bool      `json:"online"`       // from tele/<topic>/LWT
-	PowerWatts  *float64   `json:"power_watts"`  // from tele/<topic>/SENSOR ENERGY.Power
-	Voltage     *float64   `json:"voltage"`      // from tele/<topic>/SENSOR ENERGY.Voltage
-	CurrentAmps *float64   `json:"current_amps"` // from tele/<topic>/SENSOR ENERGY.Current
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	Topic        string     `json:"topic,omitempty"`
+	FriendlyName string     `json:"friendly_name,omitempty"`
+	Power        string     `json:"power"`        // "ON", "OFF", or "UNKNOWN"
+	Online       *bool      `json:"online"`       // from tele/<topic>/LWT
+	PowerWatts   *float64   `json:"power_watts"`  // from tele/<topic>/SENSOR ENERGY.Power
+	Voltage      *float64   `json:"voltage"`      // from tele/<topic>/SENSOR ENERGY.Voltage
+	CurrentAmps  *float64   `json:"current_amps"` // from tele/<topic>/SENSOR ENERGY.Current
+	UpdatedAt    *time.Time `json:"updated_at,omitempty"`
 }
 
 type autoOffTracker struct {
@@ -369,7 +372,9 @@ func (m *module) reconnectMQTT(s Settings) {
 		c.Subscribe("tele/+/LWT", 0, m.onMQTTMessage)
 		c.Subscribe("tele/+/STATE", 0, m.onMQTTMessage)
 		c.Subscribe("tele/+/SENSOR", 0, m.onMQTTMessage)
+		c.Subscribe("tasmota/discovery/+/config", 0, m.onMQTTMessage)
 
+		c.Publish("cmnd/tasmotas/Power", 0, false, "")
 		for _, t := range topics {
 			c.Publish("cmnd/"+t+"/Power", 0, false, "")
 		}
@@ -390,20 +395,64 @@ func (m *module) reconnectMQTT(s Settings) {
 		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", name, brokerURL)
 	})
 
+	// Disable infinite internal ConnectRetry so Connect() returns the real error immediately;
+	// our goroutine retries every 10s until connected or replaced.
+	opts.SetConnectRetry(false)
+
 	client := mqtt.NewClient(opts)
 	m.mu.Lock()
 	m.mqttClient = client
 	m.mu.Unlock()
 
 	go func() {
-		tok := client.Connect()
-		if tok.WaitTimeout(10*time.Second) && tok.Error() != nil {
-			m.mu.Lock()
-			m.mqttError = tok.Error().Error()
-			m.mu.Unlock()
-			fmt.Fprintf(os.Stderr, "%s: initial MQTT connect failed (will retry): %v\n", name, tok.Error())
+		for {
+			m.mu.RLock()
+			current := m.mqttClient
+			m.mu.RUnlock()
+			if current != client {
+				return
+			}
+			tok := client.Connect()
+			if tok.WaitTimeout(8 * time.Second) {
+				if err := tok.Error(); err == nil {
+					return
+				} else {
+					m.mu.Lock()
+					m.mqttError = err.Error()
+					m.mu.Unlock()
+					fmt.Fprintf(os.Stderr, "%s: MQTT connect failed (retrying in 10s): %v\n", name, err)
+				}
+			} else {
+				m.mu.Lock()
+				m.mqttError = "connection timed out"
+				m.mu.Unlock()
+			}
+			time.Sleep(10 * time.Second)
 		}
 	}()
+}
+
+func (m *module) discoverPlugs() {
+	m.mu.RLock()
+	c := m.mqttClient
+	up := m.mqttUp
+	m.mu.RUnlock()
+	if c != nil && up {
+		c.Publish("cmnd/tasmotas/Power", 0, false, "")
+	}
+}
+
+func (m *module) discoveredListLocked() []PlugTelemetry {
+	out := make([]PlugTelemetry, 0, len(m.plugs))
+	for topic, p := range m.plugs {
+		cp := *p
+		cp.Topic = topic
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Topic < out[j].Topic
+	})
+	return out
 }
 
 func (m *module) testBroker() (bool, string, string) {
@@ -461,18 +510,45 @@ func (m *module) onMQTTMessage(_ mqtt.Client, msg mqtt.Message) {
 	if len(parts) < 3 {
 		return
 	}
+	now := time.Now()
+
+	// Tasmota native discovery: tasmota/discovery/<mac>/config
+	if len(parts) == 4 && parts[0] == "tasmota" && parts[1] == "discovery" && parts[3] == "config" {
+		var disc struct {
+			T  string   `json:"t"`
+			FN []string `json:"fn"`
+			HN string   `json:"hn"`
+		}
+		if json.Unmarshal(msg.Payload(), &disc) != nil || disc.T == "" {
+			return
+		}
+		m.mu.Lock()
+		plug, ok := m.plugs[disc.T]
+		if !ok {
+			plug = &PlugTelemetry{Topic: disc.T, Power: "UNKNOWN"}
+			m.plugs[disc.T] = plug
+		}
+		if len(disc.FN) > 0 && disc.FN[0] != "" {
+			plug.FriendlyName = disc.FN[0]
+		} else if disc.HN != "" && plug.FriendlyName == "" {
+			plug.FriendlyName = disc.HN
+		}
+		plug.UpdatedAt = &now
+		m.mu.Unlock()
+		return
+	}
+
 	prefix := parts[0]
 	topic := strings.Join(parts[1:len(parts)-1], "/")
 	leaf := parts[len(parts)-1]
 	payload := strings.TrimSpace(string(msg.Payload()))
-	now := time.Now()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plug, ok := m.plugs[topic]
 	if !ok {
-		plug = &PlugTelemetry{Power: "UNKNOWN"}
+		plug = &PlugTelemetry{Topic: topic, Power: "UNKNOWN"}
 		m.plugs[topic] = plug
 	}
 
@@ -684,13 +760,14 @@ func (m *module) stepAutoOff(ctx context.Context) {
 // --- HTTP Routes ---
 
 type statusResponse struct {
-	DeviceID             string         `json:"device_id"`
-	MQTTConfigured       bool           `json:"mqtt_configured"`
-	MQTTConnected        bool           `json:"mqtt_connected"`
-	MQTTBroker           string         `json:"mqtt_broker,omitempty"`
-	MQTTError            string         `json:"mqtt_error,omitempty"`
-	Config               DeviceConfig   `json:"config"`
-	Plug                 *PlugTelemetry `json:"plug,omitempty"`
+	DeviceID             string          `json:"device_id"`
+	MQTTConfigured       bool            `json:"mqtt_configured"`
+	MQTTConnected        bool            `json:"mqtt_connected"`
+	MQTTBroker           string          `json:"mqtt_broker,omitempty"`
+	MQTTError            string          `json:"mqtt_error,omitempty"`
+	Config               DeviceConfig    `json:"config"`
+	Plug                 *PlugTelemetry  `json:"plug,omitempty"`
+	DiscoveredPlugs      []PlugTelemetry `json:"discovered_plugs,omitempty"`
 	CanTurnOff           bool           `json:"can_turn_off"`
 	LockReason           string         `json:"lock_reason,omitempty"`
 	PrinterConnected     bool           `json:"printer_connected"`
@@ -740,6 +817,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 			}
 		}
 	}
+	discovered := m.discoveredListLocked()
 	m.mu.RUnlock()
 
 	return statusResponse{
@@ -750,6 +828,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		MQTTError:           mqttErr,
 		Config:              cfg,
 		Plug:                plugCopy,
+		DiscoveredPlugs:     discovered,
 		CanTurnOff:          safety.CanTurnOff,
 		LockReason:          safety.LockReason,
 		PrinterConnected:    safety.Connected,
@@ -784,6 +863,17 @@ func (m *module) routes() http.Handler {
 			"ok":     ok,
 			"broker": broker,
 			"error":  errMsg,
+		})
+	})
+
+	mux.HandleFunc("POST /discover", func(w http.ResponseWriter, _ *http.Request) {
+		m.discoverPlugs()
+		time.Sleep(400 * time.Millisecond)
+		m.mu.RLock()
+		discovered := m.discoveredListLocked()
+		m.mu.RUnlock()
+		answer(w, http.StatusOK, map[string]any{
+			"plugs": discovered,
 		})
 	})
 

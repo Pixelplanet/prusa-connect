@@ -81,6 +81,25 @@
       busy = false;
     }
   }
+
+  async function handleDiscover() {
+    busy = true;
+    errorMsg = '';
+    try {
+      await api.discoverPlugs();
+      await refresh();
+    } catch (err) {
+      errorMsg = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function handleSelectDiscovered(topic: string) {
+    if (!topic) return;
+    topicInput = topic;
+    void handleSaveTopic();
+  }
 </script>
 
 <div class="rounded-lg border p-4 space-y-3">
@@ -163,6 +182,42 @@
         </Badge>
       {/if}
     </label>
+  {/if}
+
+  {#if status?.mqtt_connected}
+    <div class="flex items-center gap-2 pt-1">
+      <label
+        class="text-xs text-muted-foreground shrink-0"
+        for="tasmota-discovered"
+      >
+        {t('tasmota-power.section.discoveredLabel')}
+      </label>
+      <select
+        id="tasmota-discovered"
+        class="flex-1 rounded border bg-background px-2 py-1 text-xs"
+        value={status.config.tasmota_topic}
+        disabled={busy}
+        onchange={(e) =>
+          handleSelectDiscovered((e.currentTarget as HTMLSelectElement).value)}
+      >
+        <option value="">
+          {t('tasmota-power.section.discoveredPlaceholder')}
+        </option>
+        {#each status.discovered_plugs ?? [] as plug (plug.topic)}
+          <option value={plug.topic}>
+            {plug.friendly_name ? `${plug.friendly_name} (${plug.topic})` : plug.topic} · {plug.power}
+          </option>
+        {/each}
+      </select>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={busy}
+        onclick={() => void handleDiscover()}
+      >
+        {t('tasmota-power.section.discoverButton')}
+      </Button>
+    </div>
   {/if}
 
   <div class="flex items-center gap-2 pt-1">
