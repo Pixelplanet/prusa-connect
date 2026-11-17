@@ -1,0 +1,83 @@
+name: Build and Push Linux Docker Image (GHCR)
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Additional image tag (optional, e.g. 0.1.0-beta.1)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/prusa-connect
+
+jobs:
+  build-and-push:
+    name: Build & Push linux/amd64 Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Go version and build version
+        id: meta_vars
+        run: |
+          GO_VER=$(grep '^go ' go.mod | awk '{print $2}')
+          echo "go_version=${GO_VER}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            BUILD_VER="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            BUILD_VER="${{ github.event.inputs.tag }}"
+          else
+            BUILD_VER="$(cat VERSION)-dev.${GITHUB_SHA::7}"
+          fi
+          echo "build_version=${BUILD_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+            type=raw,value=latest
+
+      - name: Build and push linux/amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GO_VERSION=${{ steps.meta_vars.outputs.go_version }}
+            BUILD_VERSION=${{ steps.meta_vars.outputs.build_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
