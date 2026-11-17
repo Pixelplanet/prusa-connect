@@ -1,0 +1,63 @@
+name: tasmota-power
+title: Tasmota Power
+summary: Control and monitor Tasmota smart plugs for printers via MQTT, with active-print power-off protection and auto-off after print.
+codeowner: Pixelplanet
+kind: sink
+version: 0.1.0
+license: MIT
+contract_major: 1
+openapi: openapi.json
+
+require:
+  core-device.get: "*"
+  core-device.list: "*"
+  core-device.jobs: "*"
+  core-state.get: "*"
+  core-state.put: "*"
+  core-state.list: "*"
+  core-state.delete: "*"
+
+permissions:
+  - observe
+
+options:
+  - key: mqtt_broker
+    type: string
+    default: ""
+    summary: MQTT broker URL (for example tcp://192.168.1.10:1883).
+  - key: mqtt_username
+    type: string
+    default: ""
+    summary: Optional MQTT username.
+  - key: mqtt_password
+    type: string
+    default: ""
+    summary: Optional MQTT password.
+  - key: mqtt_client_id
+    type: string
+    default: "prusa-connect-tasmota"
+    summary: MQTT client identifier used when connecting to the broker.
+  - key: auto_off_cooldown_sec
+    type: int
+    default: "120"
+    summary: Default seconds to wait after a print finishes before auto-off cuts power.
+
+platforms:
+  - linux_amd64
+  - linux_arm64
+
+ui:
+  entry: ui/index.js
+  library: ">=0.0.1 <1.0.0"
+  contributes:
+    device_section:
+      - id: power-plug
+        title: Power Plug
+    device_card:
+      - id: power-status
+        title: Power
+    device_action:
+      - id: toggle-power
+        title: Toggle Power
+        icon: power
+        destructive: false
