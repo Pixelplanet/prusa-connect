@@ -59,5 +59,5 @@ ui:
     device_action:
       - id: toggle-power
         title: Toggle Power
-        icon: power
+        icon: wrench
         destructive: false
