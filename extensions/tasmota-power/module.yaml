@@ -12,13 +12,12 @@ require:
   core-device.get: "*"
   core-device.list: "*"
   core-device.jobs: "*"
-  core-state.get: "*"
-  core-state.put: "*"
-  core-state.list: "*"
-  core-state.delete: "*"
 
 permissions:
   - observe
+
+needs:
+  data: true
 
 options:
   - key: mqtt_broker
