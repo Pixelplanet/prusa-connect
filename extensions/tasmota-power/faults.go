@@ -33,20 +33,20 @@ var (
 	PrinterBusy = fault.Register(faultDomain, "PRINTER_BUSY", http.StatusConflict, fault.Document(
 		"Cannot turn off plug while printer is active",
 		"Wait until the printer is idle or finished, or enable Auto-off when print finishes.",
-		fault.RetryWithCondition,
+		fault.RetryAllowed,
 		fault.ShowDetail,
 		"state",
 	))
 	BrokerOffline = fault.Register(faultDomain, "BROKER_OFFLINE", http.StatusServiceUnavailable, fault.Document(
 		"MQTT broker is not connected",
 		"Verify the MQTT broker address, credentials, and network reachability.",
-		fault.RetryWithBackoff,
+		fault.RetryAllowed,
 		fault.ShowDetail,
 	))
 	InternalError = fault.Register(faultDomain, "INTERNAL_ERROR", http.StatusInternalServerError, fault.Document(
 		"Internal module error",
 		"Check the server logs for details.",
-		fault.RetryWithBackoff,
+		fault.RetryAllowed,
 		fault.ShowDetail,
 	))
 )
