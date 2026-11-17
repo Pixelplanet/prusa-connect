@@ -10,6 +10,7 @@
       "get": {
         "operationId": "get-device-power",
         "summary": "Get Tasmota plug config, live power state, and safety lock status for a printer",
+        "description": "Returns the printer's configured Tasmota MQTT topic, live relay/power telemetry, active-print safety lock state, and auto-off countdown.",
         "parameters": [
           {
             "name": "device_id",
@@ -29,6 +30,7 @@
       "put": {
         "operationId": "put-device-power-config",
         "summary": "Configure Tasmota MQTT topic and auto-off settings for a printer",
+        "description": "Persists the printer's Tasmota MQTT topic, auto-off-after-print flag, and optional cooldown duration.",
         "parameters": [
           {
             "name": "device_id",
@@ -47,7 +49,8 @@
     "/devices/{device_id}/power": {
       "post": {
         "operationId": "post-device-power",
-        "summary": "Turn a printer's Tasmota plug ON, OFF, or TOGGLE (refuses OFF if printer is active)",
+        "summary": "Turn a printer's Tasmota plug ON, OFF, or TOGGLE",
+        "description": "Publishes ON or OFF to cmnd/<topic>/Power via MQTT. Refuses OFF or TOGGLE-to-OFF with 409 Conflict if the printer is actively printing or busy.",
         "parameters": [
           {
             "name": "device_id",
@@ -67,6 +70,7 @@
       "post": {
         "operationId": "post-device-auto-off",
         "summary": "Arm or disarm automatic power-off when the current print finishes",
+        "description": "Enables or disables one-shot automatic power-off after the current print finishes and the cooldown period elapses.",
         "parameters": [
           {
             "name": "device_id",
