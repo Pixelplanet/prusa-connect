@@ -1,0 +1,6 @@
+@reference 'tailwindcss';
+@reference '@prusa/connect-ui/tokens.css';
+@layer utilities {
+  @tailwind utilities;
+}
+@source './';

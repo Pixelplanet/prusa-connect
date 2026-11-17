@@ -1,0 +1,29 @@
+{
+  "tasmota-power": {
+    "section": {
+      "title": "Tasmota Power Plug",
+      "brokerUnconfigured": "MQTT broker not configured. Set mqtt_broker in Settings -> Extensions -> Tasmota Power.",
+      "brokerOffline": "MQTT broker disconnected",
+      "plugOn": "Plug ON",
+      "plugOff": "Plug OFF",
+      "plugUnknown": "Plug state unknown",
+      "turnOn": "Turn On",
+      "turnOff": "Turn Off",
+      "autoOffLabel": "Turn printer off when print finishes",
+      "autoOffPending": "Auto-off in {seconds}s",
+      "topicLabel": "Tasmota Topic",
+      "topicPlaceholder": "e.g. tasmota_mk4",
+      "saveTopic": "Save",
+      "watts": "{watts} W"
+    },
+    "card": {
+      "on": "Plug: ON",
+      "onWatts": "Plug: ON · {watts} W",
+      "off": "Plug: OFF",
+      "autoOff": "Auto-off armed"
+    },
+    "action": {
+      "noTopic": "No Tasmota topic configured for this printer"
+    }
+  }
+}

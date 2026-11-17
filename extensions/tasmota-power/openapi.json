@@ -1,0 +1,86 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "tasmota-power",
+    "version": "0.1.0",
+    "description": "Tasmota MQTT smart plug control and monitoring per printer."
+  },
+  "paths": {
+    "/devices/{device_id}": {
+      "get": {
+        "operationId": "get-device-power",
+        "summary": "Get Tasmota plug config, live power state, and safety lock status for a printer",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device power plug status"
+          }
+        }
+      }
+    },
+    "/devices/{device_id}/config": {
+      "put": {
+        "operationId": "put-device-power-config",
+        "summary": "Configure Tasmota MQTT topic and auto-off settings for a printer",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated device power plug status"
+          }
+        }
+      }
+    },
+    "/devices/{device_id}/power": {
+      "post": {
+        "operationId": "post-device-power",
+        "summary": "Turn a printer's Tasmota plug ON, OFF, or TOGGLE (refuses OFF if printer is active)",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Command sent and updated plug status"
+          }
+        }
+      }
+    },
+    "/devices/{device_id}/auto-off": {
+      "post": {
+        "operationId": "post-device-auto-off",
+        "summary": "Arm or disarm automatic power-off when the current print finishes",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated device power plug status"
+          }
+        }
+      }
+    }
+  }
+}

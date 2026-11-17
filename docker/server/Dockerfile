@@ -82,6 +82,8 @@ RUN cd extensions/server-slicing/client && pnpm install --frozen-lockfile && pnp
 COPY extensions/materials ./extensions/materials
 RUN cd extensions/materials/client && pnpm install --frozen-lockfile && pnpm run build && \
     cd ../ui && pnpm install --frozen-lockfile && pnpm run build && test -f dist/ui/index.js
+COPY extensions/tasmota-power ./extensions/tasmota-power
+RUN cd extensions/tasmota-power/ui && pnpm install --no-frozen-lockfile && pnpm run build && test -f dist/ui/index.js
 
 # Build Go server (matches Makefile: go build -o bin/server ./cmd/prusa-connect)
 # The -trixie variant matches the debian:trixie-slim runtime stage below. The
@@ -197,6 +199,12 @@ RUN BINARY="/tmp/materials_$(go env GOOS)_$(go env GOARCH)" && \
     CGO_ENABLED=0 go -C extensions/materials build -o "$BINARY" . && \
     sh extensions/scripts/pack-release.sh extensions/materials/ui/dist "$BINARY" /opt/modules/materials
 
+# The Tasmota power plug release, laid out the same way.
+COPY --from=extensions-builder /app/extensions/tasmota-power/ui/dist ./extensions/tasmota-power/ui/dist
+RUN BINARY="/tmp/tasmota-power_$(go env GOOS)_$(go env GOARCH)" && \
+    CGO_ENABLED=0 go -C extensions/tasmota-power build -o "$BINARY" . && \
+    sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist "$BINARY" /opt/modules/tasmota-power
+
 # The Fractal release. It has no web page, so its bundle is the manifest and
 # the route document alone. Its NATS dependencies are not the core's, so this
 # build downloads them.
@@ -228,6 +236,7 @@ COPY --from=builder /opt/modules/buddy-debug-logs /opt/modules/buddy-debug-logs
 COPY --from=builder /opt/modules/threemf /opt/modules/threemf
 COPY --from=builder /opt/modules/server-slicing /opt/modules/server-slicing
 COPY --from=builder /opt/modules/materials /opt/modules/materials
+COPY --from=builder /opt/modules/tasmota-power /opt/modules/tasmota-power
 COPY --from=builder /opt/modules/fractal /opt/modules/fractal
 
 # The root certificates the server verifies an https peer against: the module

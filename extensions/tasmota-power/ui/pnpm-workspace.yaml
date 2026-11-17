@@ -1,0 +1,12 @@
+packages:
+  - .
+
+savePrefix: ''
+enableGlobalVirtualStore: false
+
+overrides:
+  '@prusa/connect': 'link:../../../packages/typescript'
+  '@prusa/connect-ui': 'link:../../../packages/svelte'
+  '@prusa/frontend-standards': 'file:../../../packages/standards'
+
+autoInstallPeers: false
