@@ -36,7 +36,9 @@
   let settingsMeta = $state<SettingsResponse | undefined>(undefined);
   let assignmentsData = $state<AssignmentsResponse | undefined>(undefined);
   let manualOpen = $state<Record<string, boolean>>({});
+  let selectedTopics = $state<Record<string, string>>({});
   let manualTopics = $state<Record<string, string>>({});
+  let justSaved = $state<Record<string, boolean>>({});
 
   let savingSettings = $state(false);
   let testing = $state(false);
@@ -55,26 +57,49 @@
     const parsedCooldown = Number.parseInt(cooldownSec, 10);
     return {
       mqtt_host: mqttHost.trim(),
-      mqtt_port: Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : mqttTls ? 8883 : 1883,
+      mqtt_port:
+        Number.isFinite(parsedPort) && parsedPort > 0
+          ? parsedPort
+          : mqttTls
+            ? 8883
+            : 1883,
       mqtt_tls: mqttTls,
       mqtt_username: mqttUsername.trim(),
       mqtt_password: mqttPassword,
       keep_password: mqttPassword === '' && hasSavedPassword,
       mqtt_client_id: mqttClientId.trim() || 'prusa-connect-tasmota',
-      auto_off_cooldown_sec: Number.isFinite(parsedCooldown) && parsedCooldown >= 0 ? parsedCooldown : 120,
+      auto_off_cooldown_sec:
+        Number.isFinite(parsedCooldown) && parsedCooldown >= 0
+          ? parsedCooldown
+          : 120,
     };
   }
 
   function applySettingsResponse(res: SettingsResponse) {
     settingsMeta = res;
     mqttHost = res.settings.mqtt_host;
-    mqttPort = String(res.settings.mqtt_port || (res.settings.mqtt_tls ? 8883 : 1883));
+    mqttPort = String(
+      res.settings.mqtt_port || (res.settings.mqtt_tls ? 8883 : 1883),
+    );
     mqttTls = res.settings.mqtt_tls;
     mqttUsername = res.settings.mqtt_username;
     mqttPassword = '';
     hasSavedPassword = res.settings.has_password;
     mqttClientId = res.settings.mqtt_client_id || 'prusa-connect-tasmota';
     cooldownSec = String(res.settings.auto_off_cooldown_sec ?? 120);
+  }
+
+  function syncAssignmentDrafts(aRes: AssignmentsResponse) {
+    assignmentsData = aRes;
+    const nextSelected: Record<string, string> = {};
+    const nextManual: Record<string, string> = {};
+    for (const dev of devices) {
+      const topic = aRes.assignments[dev.id]?.tasmota_topic ?? '';
+      nextSelected[dev.id] = topic;
+      nextManual[dev.id] = topic;
+    }
+    selectedTopics = nextSelected;
+    manualTopics = nextManual;
   }
 
   async function refreshAll() {
@@ -84,12 +109,7 @@
         api.getAssignments(),
       ]);
       applySettingsResponse(sRes);
-      assignmentsData = aRes;
-      const nextManual: Record<string, string> = {};
-      for (const dev of devices) {
-        nextManual[dev.id] = aRes.assignments[dev.id]?.tasmota_topic ?? '';
-      }
-      manualTopics = nextManual;
+      syncAssignmentDrafts(aRes);
     } catch (err) {
       settingsMessage = err instanceof Error ? err.message : String(err);
       settingsMessageIsError = true;
@@ -140,7 +160,7 @@
     try {
       const res = await api.saveSettings(buildSettingsPayload());
       applySettingsResponse(res);
-      assignmentsData = await api.getAssignments();
+      syncAssignmentDrafts(await api.getAssignments());
       if (res.mqtt_error) {
         settingsMessage = res.mqtt_error;
         settingsMessageIsError = true;
@@ -161,7 +181,7 @@
     assignmentError = '';
     try {
       await api.discoverPlugs();
-      assignmentsData = await api.getAssignments();
+      syncAssignmentDrafts(await api.getAssignments());
     } catch (err) {
       assignmentError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -169,7 +189,10 @@
     }
   }
 
-  function ownerOfTopic(topic: string, excludeDeviceId: string): string | undefined {
+  function ownerOfTopic(
+    topic: string,
+    excludeDeviceId: string,
+  ): string | undefined {
     if (!topic || !assignmentsData) return undefined;
     for (const [devId, cfg] of Object.entries(assignmentsData.assignments)) {
       if (devId !== excludeDeviceId && cfg.tasmota_topic === topic) {
@@ -178,6 +201,10 @@
       }
     }
     return undefined;
+  }
+
+  function plugByTopic(topic: string): PlugTelemetry | undefined {
+    return assignmentsData?.discovered_plugs?.find((p) => p.topic === topic);
   }
 
   function plugLabel(plug: PlugTelemetry, currentDeviceId: string): string {
@@ -197,6 +224,7 @@
   async function assignTopic(deviceId: string, topic: string) {
     savingDeviceId = deviceId;
     assignmentError = '';
+    justSaved[deviceId] = false;
     try {
       const existing = assignmentsData?.assignments[deviceId];
       await api.saveConfig(deviceId, {
@@ -204,8 +232,12 @@
         auto_off_after_print: existing?.auto_off_after_print ?? false,
         cooldown_sec: existing?.cooldown_sec,
       });
-      assignmentsData = await api.getAssignments();
+      syncAssignmentDrafts(await api.getAssignments());
       manualOpen[deviceId] = false;
+      justSaved[deviceId] = true;
+      setTimeout(() => {
+        justSaved[deviceId] = false;
+      }, 3000);
     } catch (err) {
       assignmentError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -220,8 +252,6 @@
     <SettingsPane
       title={t('tasmota-power.settings.mqttTitle')}
       description={t('tasmota-power.settings.mqttDescription')}
-      message={settingsMessage || undefined}
-      messageIsFailure={settingsMessageIsError}
       edged
     >
       <div class="flex flex-col gap-4">
@@ -229,7 +259,7 @@
         <div class="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-border bg-background/50 px-3 py-2 text-xs">
           <div class="flex items-center gap-2">
             {#if settingsMeta?.mqtt_connected}
-              <Badge variant="default">
+              <Badge variant="success">
                 {t('tasmota-power.settings.connected')}
               </Badge>
             {:else}
@@ -238,18 +268,23 @@
               </Badge>
             {/if}
             <span class="text-muted-foreground font-mono">
-              {settingsMeta?.mqtt_broker || t('tasmota-power.settings.notConfigured')}
+              {settingsMeta?.mqtt_broker ||
+                t('tasmota-power.settings.notConfigured')}
             </span>
           </div>
           {#if settingsMeta?.mqtt_error && !settingsMeta.mqtt_connected}
-            <span class="text-destructive text-xs">{settingsMeta.mqtt_error}</span>
+            <span class="text-destructive text-xs">
+              {settingsMeta.mqtt_error}
+            </span>
           {/if}
         </div>
 
         <!-- Row 1: Host | Port | TLS -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
           <div class="sm:col-span-7 flex flex-col gap-1.5">
-            <Label for="mqtt-host">{t('tasmota-power.settings.hostLabel')}</Label>
+            <Label for="mqtt-host">
+              {t('tasmota-power.settings.hostLabel')}
+            </Label>
             <Input
               id="mqtt-host"
               type="text"
@@ -261,7 +296,9 @@
           </div>
 
           <div class="sm:col-span-3 flex flex-col gap-1.5">
-            <Label for="mqtt-port">{t('tasmota-power.settings.portLabel')}</Label>
+            <Label for="mqtt-port">
+              {t('tasmota-power.settings.portLabel')}
+            </Label>
             <Input
               id="mqtt-port"
               type="number"
@@ -288,7 +325,9 @@
         <!-- Row 2: Username & Password inline -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div class="flex flex-col gap-1.5">
-            <Label for="mqtt-user">{t('tasmota-power.settings.usernameLabel')}</Label>
+            <Label for="mqtt-user">
+              {t('tasmota-power.settings.usernameLabel')}
+            </Label>
             <Input
               id="mqtt-user"
               type="text"
@@ -301,7 +340,9 @@
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <Label for="mqtt-pass">{t('tasmota-power.settings.passwordLabel')}</Label>
+            <Label for="mqtt-pass">
+              {t('tasmota-power.settings.passwordLabel')}
+            </Label>
             <Input
               id="mqtt-pass"
               type="password"
@@ -316,7 +357,7 @@
           </div>
         </div>
 
-        <!-- Row 3: Cooldown & Client ID inline -->
+        <!-- Row 3: Cooldown & Client ID inline with explanations -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div class="flex flex-col gap-1.5">
             <Label for="mqtt-cooldown">
@@ -330,6 +371,9 @@
               oninput={(e: Event) =>
                 (cooldownSec = (e.currentTarget as HTMLInputElement).value)}
             />
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              {t('tasmota-power.settings.cooldownHint')}
+            </p>
           </div>
 
           <div class="flex flex-col gap-1.5">
@@ -343,8 +387,27 @@
               oninput={(e: Event) =>
                 (mqttClientId = (e.currentTarget as HTMLInputElement).value)}
             />
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              {t('tasmota-power.settings.clientIdHint')}
+            </p>
           </div>
         </div>
+
+        <!-- Green / Red Test or Save Feedback Banner -->
+        {#if settingsMessage}
+          <div
+            role={settingsMessageIsError ? 'alert' : 'status'}
+            class={[
+              'rounded-sm border px-3 py-2 text-xs font-medium',
+              settingsMessageIsError
+                ? 'border-destructive bg-destructive/15 text-destructive-foreground'
+                : 'border-success bg-success/15 text-emerald-400',
+            ]}
+          >
+            {settingsMessageIsError ? '✕ ' : '✓ '}
+            {settingsMessage}
+          </div>
+        {/if}
       </div>
 
       {#snippet actions()}
@@ -404,23 +467,54 @@
           {t('tasmota-power.settings.noPrinters')}
         </p>
       {:else}
-        <div class="divide-y divide-border rounded-sm border border-border">
+        <div class="flex flex-col gap-3">
           {#each devices as dev (dev.id)}
             {@const currentTopic =
               assignmentsData?.assignments[dev.id]?.tasmota_topic ?? ''}
+            {@const draftTopic = selectedTopics[dev.id] ?? currentTopic}
+            {@const assignedPlug = currentTopic
+              ? plugByTopic(currentTopic)
+              : undefined}
             {@const busy = savingDeviceId === dev.id}
             {@const hasDiscovered =
               (assignmentsData?.discovered_plugs?.length ?? 0) > 0}
             {@const showManual = manualOpen[dev.id] || !hasDiscovered}
-            <div class="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between">
-              <div class="min-w-0">
-                <div class="text-sm font-medium truncate">
-                  {dev.name || dev.id}
-                </div>
-                <div class="text-xs text-muted-foreground">
-                  {dev.model ?? 'Printer'}
+            {@const isDirty = showManual
+              ? (manualTopics[dev.id] ?? currentTopic).trim() !== currentTopic
+              : draftTopic !== currentTopic}
+
+            <div class="flex flex-col gap-3 rounded-sm border border-border bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex flex-col gap-1 min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-sm font-semibold truncate">
+                    {dev.name || dev.id}
+                  </span>
+                  <Badge variant="outline">{dev.model ?? 'Printer'}</Badge>
                   {#if currentTopic}
-                    · <code class="font-mono">{currentTopic}</code>
+                    <Badge
+                      variant={assignedPlug?.power === 'ON'
+                        ? 'success'
+                        : 'secondary'}
+                    >
+                      {assignedPlug?.friendly_name
+                        ? `${assignedPlug.friendly_name} (${currentTopic})`
+                        : currentTopic}
+                      {#if assignedPlug}
+                        · {assignedPlug.power}
+                        {#if assignedPlug.power === 'ON' && assignedPlug.power_watts !== undefined}
+                          · {Math.round(assignedPlug.power_watts)} W
+                        {/if}
+                      {/if}
+                    </Badge>
+                  {:else}
+                    <Badge variant="outline">
+                      {t('tasmota-power.settings.noPlugAssigned')}
+                    </Badge>
+                  {/if}
+                  {#if justSaved[dev.id]}
+                    <Badge variant="success">
+                      ✓ {t('tasmota-power.settings.assignedSaved')}
+                    </Badge>
                   {/if}
                 </div>
               </div>
@@ -429,13 +523,13 @@
                 {#if hasDiscovered && !manualOpen[dev.id]}
                   <select
                     class="h-8 rounded-sm border border-input bg-background px-2.5 text-xs min-w-[230px]"
-                    value={currentTopic}
+                    value={draftTopic}
                     disabled={busy}
-                    onchange={(e) =>
-                      void assignTopic(
-                        dev.id,
-                        (e.currentTarget as HTMLSelectElement).value,
-                      )}
+                    onchange={(e) => {
+                      selectedTopics[dev.id] = (
+                        e.currentTarget as HTMLSelectElement
+                      ).value;
+                    }}
                   >
                     <option value="">
                       {t('tasmota-power.settings.unassigned')}
@@ -464,17 +558,23 @@
                       ).value;
                     }}
                   />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onclick={() =>
-                      void assignTopic(dev.id, manualTopics[dev.id] ?? '')}
-                  >
-                    {t('tasmota-power.settings.saveTopic')}
-                  </Button>
                 {/if}
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={isDirty ? 'default' : 'outline'}
+                  disabled={busy || !isDirty}
+                  onclick={() =>
+                    void assignTopic(
+                      dev.id,
+                      showManual
+                        ? (manualTopics[dev.id] ?? '')
+                        : draftTopic,
+                    )}
+                >
+                  {t('tasmota-power.settings.saveTopic')}
+                </Button>
 
                 {#if hasDiscovered}
                   <Button
@@ -493,7 +593,7 @@
                   <Button
                     type="button"
                     size="sm"
-                    variant="ghost"
+                    variant="outline"
                     disabled={busy}
                     onclick={() => void assignTopic(dev.id, '')}
                   >

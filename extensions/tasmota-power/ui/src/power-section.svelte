@@ -101,7 +101,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-2">
             {#if status.plug?.power === 'ON'}
-              <Badge variant="default">
+              <Badge variant="success">
                 {t('tasmota-power.section.plugOn')}
               </Badge>
             {:else if status.plug?.power === 'OFF'}
@@ -173,11 +173,17 @@
 
           <div class="flex items-center gap-2">
             {#if status.auto_off_pending}
-              <Badge variant="secondary">
-                {t('tasmota-power.section.autoOffPending', {
-                  seconds: status.auto_off_remaining_sec,
-                })}
-              </Badge>
+              {#if status.printer_moving}
+                <Badge variant="warning">
+                  {t('tasmota-power.section.autoOffMoving')}
+                </Badge>
+              {:else}
+                <Badge variant="secondary">
+                  {t('tasmota-power.section.autoOffPending', {
+                    seconds: status.auto_off_remaining_sec,
+                  })}
+                </Badge>
+              {/if}
             {/if}
             {#if !status.can_turn_off && status.lock_reason}
               <span class="text-xs text-muted-foreground">

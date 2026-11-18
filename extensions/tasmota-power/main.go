@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,7 +32,8 @@ import (
 
 const (
 	name    = "tasmota-power"
-	release = extension.Version("0.2.0")
+	logName = "tasmota-power-control"
+	release = extension.Version("0.2.1")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -187,6 +189,14 @@ type autoOffTracker struct {
 	finishedAt *time.Time
 }
 
+type axisSample struct {
+	X           float64
+	Y           float64
+	Z           float64
+	SampledAt   time.Time
+	LastMovedAt time.Time
+}
+
 type module struct {
 	devices *deviceapi.Client
 
@@ -201,6 +211,7 @@ type module struct {
 	plugs      map[string]*PlugTelemetry
 	configs    map[string]DeviceConfig
 	trackers   map[string]*autoOffTracker
+	axes       map[string]*axisSample
 }
 
 func newModule(conn *wirerpc.Conn) *module {
@@ -209,6 +220,7 @@ func newModule(conn *wirerpc.Conn) *module {
 		plugs:    make(map[string]*PlugTelemetry),
 		configs:  make(map[string]DeviceConfig),
 		trackers: make(map[string]*autoOffTracker),
+		axes:     make(map[string]*axisSample),
 	}
 	def := defaultSettings()
 	m.held.Store(&def)
@@ -224,7 +236,7 @@ func (m *module) settings() Settings {
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", logName, err)
 		os.Exit(1)
 	}
 }
@@ -301,7 +313,7 @@ func run() error {
 		mod.autoOffLoop(ctx)
 	}()
 
-	fmt.Fprintf(os.Stderr, "%s %s serving on stdio (pid %d)\n", name, release, os.Getpid())
+	fmt.Fprintf(os.Stderr, "%s %s serving on stdio (pid %d)\n", logName, release, os.Getpid())
 	if err := conn.Serve(ctx); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -327,14 +339,14 @@ func (m *module) loadSettingsFromDisk() (Settings, bool) {
 	raw, err := os.ReadFile(filepath.Join(dir, settingsFileName))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "%s: read settings: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "%s: read settings: %v\n", logName, err)
 		}
 		return Settings{}, false
 	}
 
 	var loaded Settings
 	if err := json.Unmarshal(raw, &loaded); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: parse settings: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "%s: parse settings: %v\n", logName, err)
 		return Settings{}, false
 	}
 	return normalizeSettings(loaded), true
@@ -376,14 +388,14 @@ func (m *module) loadAllConfigs() {
 	raw, err := os.ReadFile(filepath.Join(dir, configsFileName))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "%s: read configs: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "%s: read configs: %v\n", logName, err)
 		}
 		return
 	}
 
 	var loaded map[string]DeviceConfig
 	if err := json.Unmarshal(raw, &loaded); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: parse configs: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "%s: parse configs: %v\n", logName, err)
 		return
 	}
 
@@ -494,7 +506,7 @@ func (m *module) reconnectMQTT(s Settings) {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "%s: connecting to MQTT broker %s (client_id=%s)\n", name, brokerURL, s.MQTTClientID)
+	fmt.Fprintf(os.Stderr, "%s: connecting to MQTT broker %s (client_id=%s)\n", logName, brokerURL, s.MQTTClientID)
 
 	opts := m.buildMQTTOptions(s, brokerURL, s.MQTTClientID)
 
@@ -520,7 +532,7 @@ func (m *module) reconnectMQTT(s Settings) {
 		for _, t := range topics {
 			c.Publish("cmnd/"+t+"/Power", 0, false, "")
 		}
-		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", name, brokerURL)
+		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", logName, brokerURL)
 	})
 
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
@@ -530,11 +542,11 @@ func (m *module) reconnectMQTT(s Settings) {
 			m.mqttError = err.Error()
 		}
 		m.mu.Unlock()
-		fmt.Fprintf(os.Stderr, "%s: MQTT connection lost: %v\n", name, err)
+		fmt.Fprintf(os.Stderr, "%s: MQTT connection lost: %v\n", logName, err)
 	})
 
 	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
-		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", name, brokerURL)
+		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", logName, brokerURL)
 	})
 
 	client := mqtt.NewClient(opts)
@@ -558,7 +570,7 @@ func (m *module) reconnectMQTT(s Settings) {
 					m.mu.Lock()
 					m.mqttError = err.Error()
 					m.mu.Unlock()
-					fmt.Fprintf(os.Stderr, "%s: MQTT connect failed (retrying in 10s): %v\n", name, err)
+					fmt.Fprintf(os.Stderr, "%s: MQTT connect failed (retrying in 10s): %v\n", logName, err)
 				}
 			} else {
 				m.mu.Lock()
@@ -741,17 +753,84 @@ func (m *module) publishPower(topic, action string) error {
 // --- Printer Activity & Safety Interlock ---
 
 type printerSafety struct {
+	DeviceName   string
 	Connected    bool
 	PrinterState string
 	ActiveJob    bool
+	Moving       bool
 	CanTurnOff   bool
 	LockReason   string
+}
+
+func readAxisFloat(state map[string]json.RawMessage, path string) (float64, bool) {
+	raw, ok := state[path]
+	if !ok {
+		return 0, false
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func (m *module) updateAxisMotion(deviceID string, state map[string]json.RawMessage) bool {
+	x, hasX := readAxisFloat(state, "/axis/x")
+	y, hasY := readAxisFloat(state, "/axis/y")
+	z, hasZ := readAxisFloat(state, "/axis/z")
+	if !hasX && !hasY && !hasZ {
+		return false
+	}
+
+	now := time.Now()
+	const moveThreshold = 0.05
+	const settleWindow = 8 * time.Second
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	prev, ok := m.axes[deviceID]
+	if !ok {
+		m.axes[deviceID] = &axisSample{
+			X:         x,
+			Y:         y,
+			Z:         z,
+			SampledAt: now,
+		}
+		return false
+	}
+
+	if !prev.SampledAt.IsZero() && now.Sub(prev.SampledAt) < 30*time.Second {
+		if (hasX && math.Abs(x-prev.X) > moveThreshold) ||
+			(hasY && math.Abs(y-prev.Y) > moveThreshold) ||
+			(hasZ && math.Abs(z-prev.Z) > moveThreshold) {
+			prev.LastMovedAt = now
+		}
+	}
+
+	if hasX {
+		prev.X = x
+	}
+	if hasY {
+		prev.Y = y
+	}
+	if hasZ {
+		prev.Z = z
+	}
+	prev.SampledAt = now
+
+	return !prev.LastMovedAt.IsZero() && now.Sub(prev.LastMovedAt) < settleWindow
 }
 
 func (m *module) checkSafety(ctx context.Context, principal, deviceID string) (printerSafety, error) {
 	dev, err := m.devices.Get(ctx, deviceapi.GetParams{Principal: principal, ID: deviceID})
 	if err != nil {
 		return printerSafety{}, err
+	}
+
+	devName := strings.TrimSpace(dev.Name)
+	if devName == "" {
+		devName = deviceID
 	}
 
 	var stateStr string
@@ -763,10 +842,14 @@ func (m *module) checkSafety(ctx context.Context, principal, deviceID string) (p
 	jobs, err := m.devices.Jobs(ctx, deviceapi.JobsParams{Principal: principal, ID: deviceID})
 	activeJob := err == nil && jobs.Current != nil && jobs.Current.Ended == nil
 
+	moving := dev.Connected && m.updateAxisMotion(deviceID, dev.State)
+
 	s := printerSafety{
+		DeviceName:   devName,
 		Connected:    dev.Connected,
 		PrinterState: stateUpper,
 		ActiveJob:    activeJob,
+		Moving:       moving,
 		CanTurnOff:   true,
 	}
 
@@ -784,6 +867,12 @@ func (m *module) checkSafety(ctx context.Context, principal, deviceID string) (p
 	if activeJob {
 		s.CanTurnOff = false
 		s.LockReason = "Printer has an active print job"
+		return s, nil
+	}
+
+	if moving {
+		s.CanTurnOff = false
+		s.LockReason = "Printer axes are still moving"
 		return s, nil
 	}
 
@@ -871,11 +960,11 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		}
 
 		if err := m.publishPower(cfg.TasmotaTopic, "OFF"); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: auto-off publish failed for %s: %v\n", name, deviceID, err)
+			fmt.Fprintf(os.Stderr, "%s: auto-off publish failed for printer %q [%s]: %v\n", logName, safety.DeviceName, deviceID, err)
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "%s: auto-off triggered for device %s (topic %s)\n", name, deviceID, cfg.TasmotaTopic)
+		fmt.Fprintf(os.Stderr, "%s: auto-off triggered for printer %q [%s] (topic %s)\n", logName, safety.DeviceName, deviceID, cfg.TasmotaTopic)
 		cfg.AutoOffAfterPrint = false
 		_ = m.saveConfig(ctx, deviceID, cfg)
 	}
@@ -921,6 +1010,7 @@ type statusResponse struct {
 	LockReason          string          `json:"lock_reason,omitempty"`
 	PrinterConnected    bool            `json:"printer_connected"`
 	PrinterState        string          `json:"printer_state,omitempty"`
+	PrinterMoving       bool            `json:"printer_moving"`
 	AutoOffPending      bool            `json:"auto_off_pending"`
 	AutoOffRemainingSec int             `json:"auto_off_remaining_sec"`
 	DefaultCooldownSec  int             `json:"default_cooldown_sec"`
@@ -958,11 +1048,15 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 	var pending bool
 	var remaining int
 	if cfg.AutoOffAfterPrint {
-		if tr, ok := m.trackers[deviceID]; ok && tr.finishedAt != nil && safety.CanTurnOff {
-			pending = true
-			rem := int((time.Duration(cooldownSec)*time.Second - time.Since(*tr.finishedAt)).Seconds())
-			if rem > 0 {
-				remaining = rem
+		if tr, ok := m.trackers[deviceID]; ok {
+			if tr.finishedAt != nil && safety.CanTurnOff {
+				pending = true
+				rem := int((time.Duration(cooldownSec)*time.Second - time.Since(*tr.finishedAt)).Seconds())
+				if rem > 0 {
+					remaining = rem
+				}
+			} else if tr.sawActive && safety.Moving {
+				pending = true
 			}
 		}
 	}
@@ -982,6 +1076,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		LockReason:          safety.LockReason,
 		PrinterConnected:    safety.Connected,
 		PrinterState:        safety.PrinterState,
+		PrinterMoving:       safety.Moving,
 		AutoOffPending:      pending,
 		AutoOffRemainingSec: remaining,
 		DefaultCooldownSec:  s.AutoOffCooldownSec,
