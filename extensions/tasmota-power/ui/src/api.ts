@@ -46,6 +46,34 @@ export interface PlugTelemetry {
   updated_at?: string;
 }
 
+export interface PowerSample {
+  ts: number;
+  watts: number;
+}
+
+export interface PowerSession {
+  active: boolean;
+  started_at: string;
+  ended_at?: string;
+  duration_sec: number;
+  energy_wh: number;
+  avg_watts: number;
+  peak_watts: number;
+}
+
+export interface PrintPowerRecord {
+  job_id?: string;
+  file_name: string;
+  active: boolean;
+  outcome?: string;
+  started_at: string;
+  ended_at?: string;
+  duration_sec: number;
+  energy_wh: number;
+  avg_watts: number;
+  peak_watts: number;
+}
+
 export interface PowerStatus {
   device_id: string;
   mqtt_configured: boolean;
@@ -63,6 +91,10 @@ export interface PowerStatus {
   auto_off_pending: boolean;
   auto_off_remaining_sec: number;
   default_cooldown_sec: number;
+  power_history?: PowerSample[];
+  session_usage?: PowerSession;
+  current_print_usage?: PrintPowerRecord;
+  print_history?: PrintPowerRecord[];
 }
 
 export interface AssignmentsResponse {
