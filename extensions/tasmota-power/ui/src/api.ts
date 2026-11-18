@@ -51,6 +51,16 @@ export interface BrokerTestResult {
   error?: string;
 }
 
+export interface AssignmentsResponse {
+  assignments: Record<string, DeviceConfig>;
+  discovered_plugs: PlugTelemetry[];
+  mqtt_configured: boolean;
+  mqtt_connected: boolean;
+  mqtt_broker?: string;
+  mqtt_error?: string;
+  default_cooldown_sec: number;
+}
+
 const opGetBrokerStatus: Operation = {
   id: 'get-broker-status',
   method: 'GET',
@@ -71,6 +81,14 @@ const opDiscover: Operation = {
   id: 'discover-tasmota-plugs',
   method: 'POST',
   path: `${BASE}/discover`,
+  response: 'json',
+  anonymous: false,
+};
+
+const opGetAssignments: Operation = {
+  id: 'get-plug-assignments',
+  method: 'GET',
+  path: `${BASE}/assignments`,
   response: 'json',
   anonymous: false,
 };
@@ -120,6 +138,9 @@ export function createApi(host: Pick<ModuleHost, 'client'>) {
 
     discoverPlugs: () =>
       t.call<{ plugs: PlugTelemetry[] }>(opDiscover, {}),
+
+    getAssignments: (signal?: AbortSignal) =>
+      t.call<AssignmentsResponse>(opGetAssignments, {}, signal),
 
     getStatus: (deviceId: string, signal?: AbortSignal) =>
       t.call<PowerStatus>(opGetStatus, { path: { device_id: deviceId } }, signal),

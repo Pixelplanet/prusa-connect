@@ -43,6 +43,14 @@ var (
 		fault.RetryAllowed,
 		fault.ShowDetail,
 	))
+	TopicInUse = fault.Register(faultDomain, "TOPIC_ALREADY_ASSIGNED", http.StatusConflict, fault.Document(
+		"Tasmota topic is already assigned to another printer",
+		"Unassign the plug from the other printer first, or pick a different Tasmota plug.",
+		fault.RetryNever,
+		fault.ShowDetail,
+		"topic",
+		"device",
+	))
 	InternalError = fault.Register(faultDomain, "INTERNAL_ERROR", http.StatusInternalServerError, fault.Document(
 		"Internal module error",
 		"Check the server logs for details.",

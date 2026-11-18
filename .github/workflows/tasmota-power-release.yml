@@ -1,0 +1,64 @@
+name: Build tasmota-power Extension
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'extensions/tasmota-power/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-extension:
+    name: Build tasmota-power (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build shared frontend packages
+        run: |
+          cd packages/typescript && pnpm install --frozen-lockfile && pnpm run build
+          cd ../svelte && pnpm install --frozen-lockfile --ignore-scripts && pnpm run build
+
+      - name: Build tasmota-power UI bundle
+        run: |
+          cd extensions/tasmota-power/ui
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+          test -f dist/ui/index.js
+
+      - name: Build and pack tasmota-power release
+        run: |
+          mkdir -p release/tasmota-power
+          go -C extensions/tasmota-power mod tidy
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go -C extensions/tasmota-power build -o /tmp/tasmota-power_linux_amd64 .
+          sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist /tmp/tasmota-power_linux_amd64 release/tasmota-power
+          tar -czf tasmota-power-linux-amd64.tar.gz -C release tasmota-power
+
+      - name: Upload tasmota-power release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasmota-power-linux-amd64
+          path: tasmota-power-linux-amd64.tar.gz
+          retention-days: 30
