@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "Tasmota MQTT smart plug control and monitoring per printer."
   },
   "paths": {
@@ -67,8 +67,8 @@
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",
-        "summary": "Get Tasmota plug config, live power state, and safety lock status for a printer",
-        "description": "Returns the printer's configured Tasmota MQTT topic, live relay/power telemetry, active-print safety lock state, and auto-off countdown.",
+        "summary": "Get Tasmota plug config, live power state, usage graph, and safety lock status for a printer",
+        "description": "Returns the printer's configured Tasmota MQTT topic, live relay/power telemetry, rolling power graph samples, session and per-print energy totals, active-print safety lock state, and auto-off countdown.",
         "parameters": [
           {
             "name": "device_id",
@@ -79,7 +79,12 @@
         ],
         "responses": {
           "200": {
-            "description": "Device power plug status"
+            "description": "Device power plug status and energy usage telemetry",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PowerStatus" }
+              }
+            }
           }
         }
       }
@@ -140,6 +145,72 @@
         "responses": {
           "200": {
             "description": "Updated device power plug status"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PowerSample": {
+        "type": "object",
+        "properties": {
+          "ts": { "type": "integer", "description": "Unix timestamp in seconds" },
+          "watts": { "type": "number", "description": "Instantaneous power draw in watts" }
+        }
+      },
+      "PowerSession": {
+        "type": "object",
+        "properties": {
+          "active": { "type": "boolean" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": "string", "format": "date-time" },
+          "duration_sec": { "type": "integer" },
+          "energy_wh": { "type": "number" },
+          "avg_watts": { "type": "number" },
+          "peak_watts": { "type": "number" }
+        }
+      },
+      "PrintPowerRecord": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string" },
+          "file_name": { "type": "string" },
+          "active": { "type": "boolean" },
+          "outcome": { "type": "string" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": "string", "format": "date-time" },
+          "duration_sec": { "type": "integer" },
+          "energy_wh": { "type": "number" },
+          "avg_watts": { "type": "number" },
+          "peak_watts": { "type": "number" }
+        }
+      },
+      "PowerStatus": {
+        "type": "object",
+        "properties": {
+          "device_id": { "type": "string" },
+          "mqtt_configured": { "type": "boolean" },
+          "mqtt_connected": { "type": "boolean" },
+          "mqtt_broker": { "type": "string" },
+          "mqtt_error": { "type": "string" },
+          "can_turn_off": { "type": "boolean" },
+          "lock_reason": { "type": "string" },
+          "printer_connected": { "type": "boolean" },
+          "printer_state": { "type": "string" },
+          "printer_moving": { "type": "boolean" },
+          "auto_off_pending": { "type": "boolean" },
+          "auto_off_remaining_sec": { "type": "integer" },
+          "default_cooldown_sec": { "type": "integer" },
+          "power_history": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PowerSample" }
+          },
+          "session_usage": { "$ref": "#/components/schemas/PowerSession" },
+          "current_print_usage": { "$ref": "#/components/schemas/PrintPowerRecord" },
+          "print_history": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/PrintPowerRecord" }
           }
         }
       }

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -33,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.2.1")
+	release = extension.Version("0.2.2")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -41,6 +42,9 @@ const (
 	defaultCooldownSec  = 120
 	configsFileName     = "configs.json"
 	settingsFileName    = "settings.json"
+	usageFileName       = "usage.json"
+	maxPowerSamples     = 360
+	maxPrintHistory     = 10
 )
 
 //go:embed openapi.json
@@ -197,21 +201,63 @@ type axisSample struct {
 	LastMovedAt time.Time
 }
 
+// PowerSample is one timestamped power draw point for the usage graph.
+type PowerSample struct {
+	Timestamp int64   `json:"ts"`
+	Watts     float64 `json:"watts"`
+}
+
+// PowerSession tracks energy consumed while the printer plug is turned ON.
+type PowerSession struct {
+	Active      bool       `json:"active"`
+	StartedAt   time.Time  `json:"started_at"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	DurationSec int        `json:"duration_sec"`
+	EnergyWh    float64    `json:"energy_wh"`
+	AvgWatts    float64    `json:"avg_watts"`
+	PeakWatts   float64    `json:"peak_watts"`
+}
+
+// PrintPowerRecord tracks energy consumed for a single print job / file.
+type PrintPowerRecord struct {
+	JobID       string     `json:"job_id,omitempty"`
+	FileName    string     `json:"file_name"`
+	Active      bool       `json:"active"`
+	Outcome     string     `json:"outcome,omitempty"`
+	StartedAt   time.Time  `json:"started_at"`
+	EndedAt     *time.Time `json:"ended_at,omitempty"`
+	DurationSec int        `json:"duration_sec"`
+	EnergyWh    float64    `json:"energy_wh"`
+	AvgWatts    float64    `json:"avg_watts"`
+	PeakWatts   float64    `json:"peak_watts"`
+}
+
+// DeviceUsage holds persisted and live power usage metrics for one printer.
+type DeviceUsage struct {
+	History      []PowerSample      `json:"history,omitempty"`
+	Session      *PowerSession      `json:"session,omitempty"`
+	CurrentPrint *PrintPowerRecord  `json:"current_print,omitempty"`
+	PrintHistory []PrintPowerRecord `json:"print_history,omitempty"`
+	LastSampleAt time.Time          `json:"last_sample_at,omitempty"`
+}
+
 type module struct {
 	devices *deviceapi.Client
 
 	held atomic.Pointer[Settings]
 
-	mu         sync.RWMutex
-	dataDir    string
-	mqttClient mqtt.Client
-	mqttUp     bool
-	mqttBroker string
-	mqttError  string
-	plugs      map[string]*PlugTelemetry
-	configs    map[string]DeviceConfig
-	trackers   map[string]*autoOffTracker
-	axes       map[string]*axisSample
+	mu             sync.RWMutex
+	dataDir        string
+	mqttClient     mqtt.Client
+	mqttUp         bool
+	mqttBroker     string
+	mqttError      string
+	plugs          map[string]*PlugTelemetry
+	configs        map[string]DeviceConfig
+	trackers       map[string]*autoOffTracker
+	axes           map[string]*axisSample
+	usage          map[string]*DeviceUsage
+	lastUsageSaved time.Time
 }
 
 func newModule(conn *wirerpc.Conn) *module {
@@ -221,6 +267,7 @@ func newModule(conn *wirerpc.Conn) *module {
 		configs:  make(map[string]DeviceConfig),
 		trackers: make(map[string]*autoOffTracker),
 		axes:     make(map[string]*axisSample),
+		usage:    make(map[string]*DeviceUsage),
 	}
 	def := defaultSettings()
 	m.held.Store(&def)
@@ -274,6 +321,7 @@ func run() error {
 				if grants.Data != "" {
 					mod.setDataDir(grants.Data)
 					mod.loadAllConfigs()
+					mod.loadAllUsage()
 				}
 
 				effective := normalizeSettings(sent)
@@ -365,11 +413,14 @@ func (m *module) writeSettingsToDisk(s Settings) error {
 	toWrite.KeepPassword = false
 	toWrite.MQTTBroker = ""
 
-	raw, err := json.MarshalIndent(toWrite, "", "  ")
+	return writeJSONAtomic(filepath.Join(dir, settingsFileName), toWrite)
+}
+
+func writeJSONAtomic(target string, v any) error {
+	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(dir, settingsFileName)
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
@@ -412,6 +463,109 @@ func (m *module) loadAllConfigs() {
 	}
 }
 
+func cloneDeviceUsage(u *DeviceUsage) *DeviceUsage {
+	if u == nil {
+		return nil
+	}
+	cp := &DeviceUsage{
+		LastSampleAt: u.LastSampleAt,
+	}
+	if len(u.History) > 0 {
+		cp.History = append([]PowerSample(nil), u.History...)
+	}
+	if u.Session != nil {
+		s := *u.Session
+		if u.Session.EndedAt != nil {
+			t := *u.Session.EndedAt
+			s.EndedAt = &t
+		}
+		cp.Session = &s
+	}
+	if u.CurrentPrint != nil {
+		p := *u.CurrentPrint
+		if u.CurrentPrint.EndedAt != nil {
+			t := *u.CurrentPrint.EndedAt
+			p.EndedAt = &t
+		}
+		cp.CurrentPrint = &p
+	}
+	if len(u.PrintHistory) > 0 {
+		cp.PrintHistory = make([]PrintPowerRecord, len(u.PrintHistory))
+		for i, item := range u.PrintHistory {
+			cp.PrintHistory[i] = item
+			if item.EndedAt != nil {
+				t := *item.EndedAt
+				cp.PrintHistory[i].EndedAt = &t
+			}
+		}
+	}
+	return cp
+}
+
+func (m *module) loadAllUsage() {
+	m.mu.RLock()
+	dir := m.dataDir
+	m.mu.RUnlock()
+	if dir == "" {
+		return
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, usageFileName))
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "%s: read usage: %v\n", logName, err)
+		}
+		return
+	}
+
+	var loaded map[string]*DeviceUsage
+	if err := json.Unmarshal(raw, &loaded); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: parse usage: %v\n", logName, err)
+		return
+	}
+
+	m.mu.Lock()
+	for id, u := range loaded {
+		if u == nil {
+			continue
+		}
+		if len(u.History) > maxPowerSamples {
+			u.History = u.History[len(u.History)-maxPowerSamples:]
+		}
+		if len(u.PrintHistory) > maxPrintHistory {
+			u.PrintHistory = u.PrintHistory[:maxPrintHistory]
+		}
+		m.usage[id] = u
+	}
+	m.lastUsageSaved = time.Now()
+	m.mu.Unlock()
+}
+
+func (m *module) saveAllUsage() error {
+	m.mu.Lock()
+	dir := m.dataDir
+	if dir == "" {
+		m.mu.Unlock()
+		return nil
+	}
+	snapshot := make(map[string]*DeviceUsage, len(m.usage))
+	for k, u := range m.usage {
+		if u != nil {
+			snapshot[k] = cloneDeviceUsage(u)
+		}
+	}
+	m.lastUsageSaved = time.Now()
+	m.mu.Unlock()
+
+	return writeJSONAtomic(filepath.Join(dir, usageFileName), snapshot)
+}
+
+func (m *module) shouldPeriodicSaveUsage(interval time.Duration) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastUsageSaved.IsZero() || time.Since(m.lastUsageSaved) >= interval
+}
+
 func (m *module) getConfig(_ context.Context, deviceID string) (DeviceConfig, error) {
 	m.mu.RLock()
 	cfg := m.configs[deviceID]
@@ -435,16 +589,7 @@ func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig
 	m.mu.Unlock()
 
 	if dir != "" {
-		raw, err := json.MarshalIndent(snapshot, "", "  ")
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dir, configsFileName)
-		tmp := target + ".tmp"
-		if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-			return err
-		}
-		if err := os.Rename(tmp, target); err != nil {
+		if err := writeJSONAtomic(filepath.Join(dir, configsFileName), snapshot); err != nil {
 			return err
 		}
 	}
@@ -523,6 +668,8 @@ func (m *module) reconnectMQTT(s Settings) {
 		m.mu.Unlock()
 
 		c.Subscribe("stat/+/POWER", 0, m.onMQTTMessage)
+		c.Subscribe("stat/+/RESULT", 0, m.onMQTTMessage)
+		c.Subscribe("stat/+/STATUS8", 0, m.onMQTTMessage)
 		c.Subscribe("tele/+/LWT", 0, m.onMQTTMessage)
 		c.Subscribe("tele/+/STATE", 0, m.onMQTTMessage)
 		c.Subscribe("tele/+/SENSOR", 0, m.onMQTTMessage)
@@ -531,6 +678,7 @@ func (m *module) reconnectMQTT(s Settings) {
 		c.Publish("cmnd/tasmotas/Power", 0, false, "")
 		for _, t := range topics {
 			c.Publish("cmnd/"+t+"/Power", 0, false, "")
+			c.Publish("cmnd/"+t+"/Status", 0, false, "8")
 		}
 		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", logName, brokerURL)
 	})
@@ -698,33 +846,54 @@ func (m *module) onMQTTMessage(_ mqtt.Client, msg mqtt.Message) {
 			plug.Power = up
 			plug.UpdatedAt = &now
 		}
-	case prefix == "tele" && leaf == "LWT":
-		online := strings.EqualFold(payload, "Online")
-		plug.Online = &online
-		plug.UpdatedAt = &now
-	case prefix == "tele" && leaf == "STATE":
+	case (prefix == "stat" && strings.EqualFold(leaf, "RESULT")) || (prefix == "tele" && leaf == "STATE"):
 		var st struct {
 			POWER string `json:"POWER"`
 		}
 		if json.Unmarshal(msg.Payload(), &st) == nil && st.POWER != "" {
-			plug.Power = strings.ToUpper(st.POWER)
-			plug.UpdatedAt = &now
+			up := strings.ToUpper(st.POWER)
+			if up == "ON" || up == "OFF" {
+				plug.Power = up
+				plug.UpdatedAt = &now
+			}
 		}
+	case prefix == "tele" && leaf == "LWT":
+		online := strings.EqualFold(payload, "Online")
+		plug.Online = &online
+		plug.UpdatedAt = &now
 	case prefix == "tele" && leaf == "SENSOR":
 		var sens struct {
-			ENERGY *struct {
-				Power   *float64 `json:"Power"`
-				Voltage *float64 `json:"Voltage"`
-				Current *float64 `json:"Current"`
-			} `json:"ENERGY"`
+			ENERGY *energyPayload `json:"ENERGY"`
 		}
 		if json.Unmarshal(msg.Payload(), &sens) == nil && sens.ENERGY != nil {
-			plug.PowerWatts = sens.ENERGY.Power
-			plug.Voltage = sens.ENERGY.Voltage
-			plug.CurrentAmps = sens.ENERGY.Current
-			plug.UpdatedAt = &now
+			applyEnergyReading(plug, sens.ENERGY, now)
+		}
+	case prefix == "stat" && strings.EqualFold(leaf, "STATUS8"):
+		var st8 struct {
+			StatusSNS *struct {
+				ENERGY *energyPayload `json:"ENERGY"`
+			} `json:"StatusSNS"`
+		}
+		if json.Unmarshal(msg.Payload(), &st8) == nil && st8.StatusSNS != nil && st8.StatusSNS.ENERGY != nil {
+			applyEnergyReading(plug, st8.StatusSNS.ENERGY, now)
 		}
 	}
+}
+
+type energyPayload struct {
+	Power   *float64 `json:"Power"`
+	Voltage *float64 `json:"Voltage"`
+	Current *float64 `json:"Current"`
+}
+
+func applyEnergyReading(plug *PlugTelemetry, energy *energyPayload, now time.Time) {
+	if energy == nil {
+		return
+	}
+	plug.PowerWatts = energy.Power
+	plug.Voltage = energy.Voltage
+	plug.CurrentAmps = energy.Current
+	plug.UpdatedAt = &now
 }
 
 func (m *module) queryPlugState(topic string) {
@@ -734,6 +903,42 @@ func (m *module) queryPlugState(topic string) {
 	m.mu.RUnlock()
 	if c != nil && up && topic != "" {
 		c.Publish("cmnd/"+topic+"/Power", 0, false, "")
+		c.Publish("cmnd/"+topic+"/Status", 0, false, "8")
+	}
+}
+
+func (m *module) pollAssignedPlugsEnergy() {
+	m.mu.RLock()
+	c := m.mqttClient
+	up := m.mqttUp
+	if c == nil || !up {
+		m.mu.RUnlock()
+		return
+	}
+	seen := make(map[string]struct{})
+	var topics []string
+	var unknownPower []string
+	for _, cfg := range m.configs {
+		t := cfg.TasmotaTopic
+		if t == "" {
+			continue
+		}
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		topics = append(topics, t)
+		if p := m.plugs[t]; p == nil || p.Power == "" || p.Power == "UNKNOWN" {
+			unknownPower = append(unknownPower, t)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, t := range unknownPower {
+		c.Publish("cmnd/"+t+"/Power", 0, false, "")
+	}
+	for _, t := range topics {
+		c.Publish("cmnd/"+t+"/Status", 0, false, "8")
 	}
 }
 
@@ -753,13 +958,60 @@ func (m *module) publishPower(topic, action string) error {
 // --- Printer Activity & Safety Interlock ---
 
 type printerSafety struct {
-	DeviceName   string
-	Connected    bool
-	PrinterState string
-	ActiveJob    bool
-	Moving       bool
-	CanTurnOff   bool
-	LockReason   string
+	DeviceName     string
+	Connected      bool
+	PrinterState   string
+	ActiveJob      bool
+	Moving         bool
+	CanTurnOff     bool
+	LockReason     string
+	JobID          string
+	JobFile        string
+	LastJobID      string
+	LastJobOutcome string
+}
+
+func readStateString(state map[string]json.RawMessage, key string) string {
+	raw, ok := state[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func readStateToken(state map[string]json.RawMessage, key string) string {
+	raw, ok := state[key]
+	if !ok {
+		return ""
+	}
+	if s := readStateString(state, key); s != "" {
+		return s
+	}
+	trimmed := strings.Trim(strings.TrimSpace(string(raw)), "\"")
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	return trimmed
+}
+
+func cleanJobFileName(displayName, filePath, deviceJobID string) string {
+	if d := strings.TrimSpace(displayName); d != "" {
+		return d
+	}
+	if p := strings.ReplaceAll(strings.TrimSpace(filePath), "\\", "/"); p != "" {
+		base := path.Base(p)
+		if base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
+	if id := strings.TrimSpace(deviceJobID); id != "" {
+		return "Print #" + id
+	}
+	return ""
 }
 
 func readAxisFloat(state map[string]json.RawMessage, path string) (float64, bool) {
@@ -842,15 +1094,43 @@ func (m *module) checkSafety(ctx context.Context, principal, deviceID string) (p
 	jobs, err := m.devices.Jobs(ctx, deviceapi.JobsParams{Principal: principal, ID: deviceID})
 	activeJob := err == nil && jobs.Current != nil && jobs.Current.Ended == nil
 
+	var jobID, jobFile, lastJobID, lastJobOutcome string
+	if err == nil {
+		if jobs.Current != nil && jobs.Current.Ended == nil {
+			jobID = strings.TrimSpace(jobs.Current.ID)
+			if jobID == "" {
+				jobID = strings.TrimSpace(jobs.Current.DeviceJobID)
+			}
+			jobFile = cleanJobFileName(jobs.Current.DisplayName, jobs.Current.Path, jobs.Current.DeviceJobID)
+		}
+		if jobs.Last != nil {
+			lastJobID = strings.TrimSpace(jobs.Last.ID)
+			lastJobOutcome = strings.TrimSpace(jobs.Last.Outcome)
+		}
+	}
+	if jobFile == "" {
+		stateDisplay := readStateString(dev.State, "/job/display")
+		statePath := readStateString(dev.State, "/job/path")
+		stateJobID := readStateToken(dev.State, "/job/id")
+		if jobID == "" && stateJobID != "" {
+			jobID = stateJobID
+		}
+		jobFile = cleanJobFileName(stateDisplay, statePath, stateJobID)
+	}
+
 	moving := dev.Connected && m.updateAxisMotion(deviceID, dev.State)
 
 	s := printerSafety{
-		DeviceName:   devName,
-		Connected:    dev.Connected,
-		PrinterState: stateUpper,
-		ActiveJob:    activeJob,
-		Moving:       moving,
-		CanTurnOff:   true,
+		DeviceName:     devName,
+		Connected:      dev.Connected,
+		PrinterState:   stateUpper,
+		ActiveJob:      activeJob,
+		Moving:         moving,
+		CanTurnOff:     true,
+		JobID:          jobID,
+		JobFile:        jobFile,
+		LastJobID:      lastJobID,
+		LastJobOutcome: lastJobOutcome,
 	}
 
 	if !dev.Connected {
@@ -879,7 +1159,155 @@ func (m *module) checkSafety(ctx context.Context, principal, deviceID string) (p
 	return s, nil
 }
 
-// --- Background Auto-Off Loop ---
+func accumulateEnergy(now, startedAt time.Time, watts float64, dt time.Duration, integrate bool, durationSec *int, energyWh, avgWatts, peakWatts *float64) {
+	if integrate && dt > 0 {
+		*energyWh += watts * dt.Hours()
+	}
+	*durationSec = int(now.Sub(startedAt).Seconds())
+	if watts > *peakWatts {
+		*peakWatts = watts
+	}
+	if *durationSec > 0 {
+		*avgWatts = *energyWh / (float64(*durationSec) / 3600.0)
+	}
+}
+
+func (m *module) updateDeviceUsage(deviceID, topic string, safety printerSafety) (dirtyDisk bool, active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p := m.plugs[topic]
+	if p == nil {
+		return false, false
+	}
+
+	plugOn := p.Power == "ON"
+	plugOff := p.Power == "OFF"
+	if !plugOn && !plugOff {
+		return false, false
+	}
+
+	watts := 0.0
+	if plugOn && p.PowerWatts != nil && *p.PowerWatts >= 0 {
+		watts = *p.PowerWatts
+	}
+
+	now := time.Now()
+	u := m.usage[deviceID]
+	if u == nil {
+		u = &DeviceUsage{}
+		m.usage[deviceID] = u
+	}
+
+	sampleDue := u.LastSampleAt.IsZero() || now.Sub(u.LastSampleAt) >= 2*time.Second
+	var dt time.Duration
+	if sampleDue {
+		if !u.LastSampleAt.IsZero() && now.After(u.LastSampleAt) && now.Sub(u.LastSampleAt) <= 2*time.Minute {
+			dt = now.Sub(u.LastSampleAt)
+		}
+		u.LastSampleAt = now
+		u.History = append(u.History, PowerSample{
+			Timestamp: now.Unix(),
+			Watts:     math.Round(watts*10) / 10,
+		})
+		if len(u.History) > maxPowerSamples {
+			u.History = u.History[len(u.History)-maxPowerSamples:]
+		}
+	}
+
+	if plugOn {
+		if u.Session == nil || !u.Session.Active {
+			u.Session = &PowerSession{
+				Active:    true,
+				StartedAt: now,
+				PeakWatts: watts,
+			}
+			dirtyDisk = true
+		} else {
+			accumulateEnergy(now, u.Session.StartedAt, watts, dt, sampleDue,
+				&u.Session.DurationSec, &u.Session.EnergyWh, &u.Session.AvgWatts, &u.Session.PeakWatts)
+		}
+	} else if plugOff && u.Session != nil && u.Session.Active {
+		u.Session.Active = false
+		ended := now
+		u.Session.EndedAt = &ended
+		u.Session.DurationSec = int(now.Sub(u.Session.StartedAt).Seconds())
+		if u.Session.DurationSec > 0 {
+			u.Session.AvgWatts = u.Session.EnergyWh / (float64(u.Session.DurationSec) / 3600.0)
+		}
+		dirtyDisk = true
+	}
+
+	printingNow := safety.Connected && (safety.ActiveJob || safety.PrinterState == "PRINTING" || safety.PrinterState == "PAUSED")
+	finishingMoves := u.CurrentPrint != nil && u.CurrentPrint.Active && safety.Connected && safety.Moving
+	printActive := printingNow || finishingMoves
+
+	finalizeCurrentPrint := func(outcome string) {
+		if u.CurrentPrint == nil || !u.CurrentPrint.Active {
+			return
+		}
+		u.CurrentPrint.Active = false
+		ended := now
+		u.CurrentPrint.EndedAt = &ended
+		u.CurrentPrint.DurationSec = int(now.Sub(u.CurrentPrint.StartedAt).Seconds())
+		if u.CurrentPrint.DurationSec > 0 {
+			u.CurrentPrint.AvgWatts = u.CurrentPrint.EnergyWh / (float64(u.CurrentPrint.DurationSec) / 3600.0)
+		}
+		if outcome == "" {
+			if safety.LastJobID != "" && safety.LastJobID == u.CurrentPrint.JobID && safety.LastJobOutcome != "" {
+				outcome = safety.LastJobOutcome
+			} else if safety.PrinterState == "STOPPED" {
+				outcome = "cancelled"
+			} else {
+				outcome = "finished"
+			}
+		}
+		u.CurrentPrint.Outcome = outcome
+		doneCopy := *u.CurrentPrint
+		u.PrintHistory = append([]PrintPowerRecord{doneCopy}, u.PrintHistory...)
+		if len(u.PrintHistory) > maxPrintHistory {
+			u.PrintHistory = u.PrintHistory[:maxPrintHistory]
+		}
+		dirtyDisk = true
+	}
+
+	if printActive {
+		if u.CurrentPrint != nil && u.CurrentPrint.Active && safety.JobID != "" && u.CurrentPrint.JobID != "" && u.CurrentPrint.JobID != safety.JobID {
+			finalizeCurrentPrint("finished")
+		}
+		if u.CurrentPrint == nil || !u.CurrentPrint.Active {
+			fileName := safety.JobFile
+			if fileName == "" {
+				fileName = "Active Print"
+			}
+			u.CurrentPrint = &PrintPowerRecord{
+				JobID:     safety.JobID,
+				FileName:  fileName,
+				Active:    true,
+				StartedAt: now,
+				PeakWatts: watts,
+			}
+			dirtyDisk = true
+		} else {
+			if safety.JobID != "" && u.CurrentPrint.JobID == "" {
+				u.CurrentPrint.JobID = safety.JobID
+			}
+			if safety.JobFile != "" && (u.CurrentPrint.FileName == "" || u.CurrentPrint.FileName == "Active Print") {
+				u.CurrentPrint.FileName = safety.JobFile
+				dirtyDisk = true
+			}
+			accumulateEnergy(now, u.CurrentPrint.StartedAt, watts, dt, plugOn && sampleDue,
+				&u.CurrentPrint.DurationSec, &u.CurrentPrint.EnergyWh, &u.CurrentPrint.AvgWatts, &u.CurrentPrint.PeakWatts)
+		}
+	} else if u.CurrentPrint != nil && u.CurrentPrint.Active {
+		finalizeCurrentPrint("")
+	}
+
+	active = (u.Session != nil && u.Session.Active) || (u.CurrentPrint != nil && u.CurrentPrint.Active)
+	return dirtyDisk, active
+}
+
+// --- Background Auto-Off & Usage Polling Loop ---
 
 func (m *module) autoOffLoop(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
@@ -896,24 +1324,36 @@ func (m *module) autoOffLoop(ctx context.Context) {
 }
 
 func (m *module) stepAutoOff(ctx context.Context) {
+	m.pollAssignedPlugsEnergy()
+
 	m.mu.RLock()
-	armed := make(map[string]DeviceConfig)
+	assigned := make(map[string]DeviceConfig)
 	for id, cfg := range m.configs {
-		if cfg.AutoOffAfterPrint && cfg.TasmotaTopic != "" {
-			armed[id] = cfg
+		if cfg.TasmotaTopic != "" {
+			assigned[id] = cfg
 		}
 	}
 	m.mu.RUnlock()
 
-	if len(armed) == 0 {
+	if len(assigned) == 0 {
 		return
 	}
 
 	defaultCooldown := m.settings().AutoOffCooldownSec
+	var anyDirty bool
+	var hasActiveUsage bool
 
-	for deviceID, cfg := range armed {
+	for deviceID, cfg := range assigned {
 		safety, err := m.checkSafety(ctx, "", deviceID)
 		if err != nil {
+			continue
+		}
+
+		dirty, active := m.updateDeviceUsage(deviceID, cfg.TasmotaTopic, safety)
+		anyDirty = anyDirty || dirty
+		hasActiveUsage = hasActiveUsage || active
+
+		if !cfg.AutoOffAfterPrint {
 			continue
 		}
 
@@ -968,6 +1408,12 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		cfg.AutoOffAfterPrint = false
 		_ = m.saveConfig(ctx, deviceID, cfg)
 	}
+
+	if anyDirty || (hasActiveUsage && m.shouldPeriodicSaveUsage(60*time.Second)) {
+		if err := m.saveAllUsage(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: save usage: %v\n", logName, err)
+		}
+	}
 }
 
 // --- HTTP Routes ---
@@ -1008,12 +1454,16 @@ type statusResponse struct {
 	DiscoveredPlugs     []PlugTelemetry `json:"discovered_plugs,omitempty"`
 	CanTurnOff          bool            `json:"can_turn_off"`
 	LockReason          string          `json:"lock_reason,omitempty"`
-	PrinterConnected    bool            `json:"printer_connected"`
-	PrinterState        string          `json:"printer_state,omitempty"`
-	PrinterMoving       bool            `json:"printer_moving"`
-	AutoOffPending      bool            `json:"auto_off_pending"`
-	AutoOffRemainingSec int             `json:"auto_off_remaining_sec"`
-	DefaultCooldownSec  int             `json:"default_cooldown_sec"`
+	PrinterConnected    bool               `json:"printer_connected"`
+	PrinterState        string             `json:"printer_state,omitempty"`
+	PrinterMoving       bool               `json:"printer_moving"`
+	AutoOffPending      bool               `json:"auto_off_pending"`
+	AutoOffRemainingSec int                `json:"auto_off_remaining_sec"`
+	DefaultCooldownSec  int                `json:"default_cooldown_sec"`
+	PowerHistory        []PowerSample      `json:"power_history,omitempty"`
+	SessionUsage        *PowerSession      `json:"session_usage,omitempty"`
+	CurrentPrintUsage   *PrintPowerRecord  `json:"current_print_usage,omitempty"`
+	PrintHistory        []PrintPowerRecord `json:"print_history,omitempty"`
 }
 
 func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (statusResponse, error) {
@@ -1024,6 +1474,12 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 	safety, err := m.checkSafety(ctx, principal, deviceID)
 	if err != nil {
 		return statusResponse{}, err
+	}
+
+	if cfg.TasmotaTopic != "" {
+		if dirty, _ := m.updateDeviceUsage(deviceID, cfg.TasmotaTopic, safety); dirty {
+			_ = m.saveAllUsage()
+		}
 	}
 
 	s := m.settings()
@@ -1060,8 +1516,22 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 			}
 		}
 	}
+	usageCopy := cloneDeviceUsage(m.usage[deviceID])
 	discovered := m.discoveredListLocked()
 	m.mu.RUnlock()
+
+	var (
+		historyCopy      []PowerSample
+		sessionCopy      *PowerSession
+		currentPrintCopy *PrintPowerRecord
+		printHistoryCopy []PrintPowerRecord
+	)
+	if usageCopy != nil {
+		historyCopy = usageCopy.History
+		sessionCopy = usageCopy.Session
+		currentPrintCopy = usageCopy.CurrentPrint
+		printHistoryCopy = usageCopy.PrintHistory
+	}
 
 	return statusResponse{
 		DeviceID:            deviceID,
@@ -1080,6 +1550,10 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		AutoOffPending:      pending,
 		AutoOffRemainingSec: remaining,
 		DefaultCooldownSec:  s.AutoOffCooldownSec,
+		PowerHistory:        historyCopy,
+		SessionUsage:        sessionCopy,
+		CurrentPrintUsage:   currentPrintCopy,
+		PrintHistory:        printHistoryCopy,
 	}, nil
 }
 
@@ -1283,6 +1757,11 @@ func (m *module) routes() http.Handler {
 		now := time.Now()
 		p.UpdatedAt = &now
 		m.mu.Unlock()
+
+		go func(topic string) {
+			time.Sleep(400 * time.Millisecond)
+			m.queryPlugState(topic)
+		}(cfg.TasmotaTopic)
 
 		resp, err := m.buildStatus(r.Context(), principal, deviceID)
 		if err != nil {

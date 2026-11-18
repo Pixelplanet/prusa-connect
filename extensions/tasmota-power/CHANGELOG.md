@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 - 2026-11-18
+
+- Poll assigned Tasmota plugs every 5 seconds via `Status 8` for responsive energy telemetry.
+- Add a live SVG power usage graph (`W` over time) to each printer's **Tasmota Power Control** section.
+- Track total energy (`Wh`/`kWh`), duration, average power, and peak power while the printer's smart plug is turned on.
+- Track per-print file energy usage (`current_print_usage`) until both printing and post-print axis movement stop, and keep the last 10 completed prints (`print_history`) persisted in `usage.json`.
+
 ## 0.2.1 - 2026-11-18
 
 - Show connection test and save results in green on success and red on failure.
