@@ -2,18 +2,28 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Tasmota MQTT smart plug control and monitoring per printer."
   },
   "paths": {
-    "/broker/status": {
+    "/settings": {
       "get": {
-        "operationId": "get-broker-status",
-        "summary": "Get MQTT broker connection status and last error",
-        "description": "Returns the normalized MQTT broker address, current connection status, and the last connection error if disconnected.",
+        "operationId": "get-tasmota-settings",
+        "summary": "Get MQTT broker settings and live connection status",
+        "description": "Returns the structured MQTT broker configuration (with password redacted), connection state, and last error.",
         "responses": {
           "200": {
-            "description": "MQTT broker status"
+            "description": "Current MQTT settings and broker status"
+          }
+        }
+      },
+      "put": {
+        "operationId": "put-tasmota-settings",
+        "summary": "Save MQTT broker settings and reconnect",
+        "description": "Saves structured MQTT broker settings to settings.json and reconnects the MQTT client.",
+        "responses": {
+          "200": {
+            "description": "Updated MQTT settings and broker status"
           }
         }
       }
@@ -22,7 +32,7 @@
       "post": {
         "operationId": "test-broker-connection",
         "summary": "Test MQTT broker connectivity",
-        "description": "Tests connecting to the configured MQTT broker and returns whether the connection succeeded or the exact error.",
+        "description": "Tests connecting to the provided (or saved) MQTT broker settings and returns whether the connection succeeded or the exact error.",
         "responses": {
           "200": {
             "description": "MQTT broker test result"

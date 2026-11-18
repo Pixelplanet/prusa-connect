@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Badge, Button } from '@prusa/connect-ui/primitives';
+  import {
+    Badge,
+    Button,
+    Card,
+    CardContent,
+    Label,
+    Switch,
+  } from '@prusa/connect-ui/primitives';
 
   import { createApi, type PowerStatus } from './api';
   import { heldHost } from './host';
@@ -62,66 +69,21 @@
 </script>
 
 {#if status}
-  {#if !status.config.tasmota_topic}
-    <div class="rounded-lg border px-4 py-3 flex items-center justify-between gap-3">
-      <p class="text-xs text-muted-foreground">
-        {t('tasmota-power.section.notAssigned')}
-      </p>
-      <a
-        href="/settings/extensions"
-        class="text-xs font-medium text-primary hover:underline shrink-0"
-      >
-        {t('tasmota-power.section.configureLink')}
-      </a>
-    </div>
-  {:else}
-    <div class="rounded-lg border p-4 space-y-3">
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-2">
-          <h3 class="text-sm font-semibold">
-            {t('tasmota-power.section.title')}
-          </h3>
-          <span class="text-xs text-muted-foreground">
-            ({status.config.tasmota_topic})
-          </span>
+  <Card density="compact">
+    <CardContent class="flex flex-col gap-3">
+      {#if !status.config.tasmota_topic}
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-muted-foreground">
+            {t('tasmota-power.section.notAssigned')}
+          </p>
+          <a
+            href="/settings/extensions"
+            class="text-xs font-medium text-primary hover:underline shrink-0"
+          >
+            {t('tasmota-power.section.configureLink')}
+          </a>
         </div>
-
-        {#if status.plug}
-          <div class="flex items-center gap-2">
-            {#if status.plug.power === 'ON' && status.plug.power_watts !== undefined}
-              <span class="text-xs text-muted-foreground tabular-nums">
-                {#if status.plug.voltage !== undefined && status.plug.current_amps !== undefined}
-                  {t('tasmota-power.section.telemetry', {
-                    watts: Math.round(status.plug.power_watts),
-                    voltage: Math.round(status.plug.voltage),
-                    amps: status.plug.current_amps.toFixed(2),
-                  })}
-                {:else}
-                  {t('tasmota-power.section.watts', {
-                    watts: Math.round(status.plug.power_watts),
-                  })}
-                {/if}
-              </span>
-            {/if}
-
-            {#if status.plug.power === 'ON'}
-              <Badge variant="default">
-                {t('tasmota-power.section.plugOn')}
-              </Badge>
-            {:else if status.plug.power === 'OFF'}
-              <Badge variant="secondary">
-                {t('tasmota-power.section.plugOff')}
-              </Badge>
-            {:else}
-              <Badge variant="outline">
-                {t('tasmota-power.section.plugUnknown')}
-              </Badge>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      {#if !status.mqtt_configured}
+      {:else if !status.mqtt_configured}
         <p class="text-xs text-muted-foreground">
           {t('tasmota-power.section.brokerUnconfigured')}
         </p>
@@ -137,6 +99,45 @@
         </p>
       {:else}
         <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2">
+            {#if status.plug?.power === 'ON'}
+              <Badge variant="default">
+                {t('tasmota-power.section.plugOn')}
+              </Badge>
+            {:else if status.plug?.power === 'OFF'}
+              <Badge variant="secondary">
+                {t('tasmota-power.section.plugOff')}
+              </Badge>
+            {:else}
+              <Badge variant="outline">
+                {t('tasmota-power.section.plugUnknown')}
+              </Badge>
+            {/if}
+
+            <span class="text-xs text-muted-foreground">
+              {status.plug?.friendly_name
+                ? `${status.plug.friendly_name} (${status.config.tasmota_topic})`
+                : status.config.tasmota_topic}
+            </span>
+
+            {#if status.plug?.power === 'ON' && status.plug.power_watts !== undefined}
+              <span class="text-xs text-muted-foreground tabular-nums">
+                ·
+                {#if status.plug.voltage !== undefined && status.plug.current_amps !== undefined}
+                  {t('tasmota-power.section.telemetry', {
+                    watts: Math.round(status.plug.power_watts),
+                    voltage: Math.round(status.plug.voltage),
+                    amps: status.plug.current_amps.toFixed(2),
+                  })}
+                {:else}
+                  {t('tasmota-power.section.watts', {
+                    watts: Math.round(status.plug.power_watts),
+                  })}
+                {/if}
+              </span>
+            {/if}
+          </div>
+
           <div class="flex items-center gap-2">
             <Button
               size="sm"
@@ -155,16 +156,22 @@
               {t('tasmota-power.section.turnOff')}
             </Button>
           </div>
+        </div>
 
-          <label class="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border">
+          <div class="flex items-center gap-2">
+            <Switch
+              id="tasmota-auto-off-{deviceId}"
               checked={status.config.auto_off_after_print}
               disabled={busy}
-              onchange={(e) =>
-                void handleAutoOff((e.currentTarget as HTMLInputElement).checked)}
+              onCheckedChange={(v: boolean) => void handleAutoOff(v)}
             />
-            <span>{t('tasmota-power.section.autoOffLabel')}</span>
+            <Label for="tasmota-auto-off-{deviceId}" variant="option">
+              {t('tasmota-power.section.autoOffLabel')}
+            </Label>
+          </div>
+
+          <div class="flex items-center gap-2">
             {#if status.auto_off_pending}
               <Badge variant="secondary">
                 {t('tasmota-power.section.autoOffPending', {
@@ -172,17 +179,18 @@
                 })}
               </Badge>
             {/if}
-          </label>
+            {#if !status.can_turn_off && status.lock_reason}
+              <span class="text-xs text-muted-foreground">
+                {status.lock_reason}
+              </span>
+            {/if}
+          </div>
         </div>
-
-        {#if !status.can_turn_off && status.lock_reason}
-          <p class="text-xs text-muted-foreground">{status.lock_reason}</p>
-        {/if}
       {/if}
 
       {#if errorMsg}
         <p class="text-xs text-destructive">{errorMsg}</p>
       {/if}
-    </div>
-  {/if}
+    </CardContent>
+  </Card>
 {/if}
