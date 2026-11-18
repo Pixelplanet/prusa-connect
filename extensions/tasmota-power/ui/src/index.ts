@@ -13,5 +13,5 @@ export default defineModule((host) => {
   host.register.deviceSection('power-plug', PowerSection);
   host.register.deviceCard('power-status', PowerCard);
   host.register.deviceAction('toggle-power', powerAction);
-  host.register.settings('mqtt-settings', PowerSettings);
+  host.register.settings('settings', PowerSettings);
 });

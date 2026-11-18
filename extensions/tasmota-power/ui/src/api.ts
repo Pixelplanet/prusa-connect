@@ -3,6 +3,32 @@ import type { ModuleHost } from '@prusa/connect-ui/slots';
 
 const BASE = '/api/v1/modules/com.github.aux.prusa3d.tasmota-power';
 
+export interface TasmotaSettings {
+  mqtt_host: string;
+  mqtt_port: number;
+  mqtt_tls: boolean;
+  mqtt_username: string;
+  mqtt_password?: string;
+  has_password: boolean;
+  keep_password?: boolean;
+  mqtt_client_id: string;
+  auto_off_cooldown_sec: number;
+}
+
+export interface SettingsResponse {
+  settings: TasmotaSettings;
+  mqtt_configured: boolean;
+  mqtt_connected: boolean;
+  mqtt_broker?: string;
+  mqtt_error?: string;
+}
+
+export interface BrokerTestResult {
+  ok: boolean;
+  broker?: string;
+  error?: string;
+}
+
 export interface DeviceConfig {
   tasmota_topic: string;
   auto_off_after_print: boolean;
@@ -38,19 +64,6 @@ export interface PowerStatus {
   default_cooldown_sec: number;
 }
 
-export interface BrokerStatus {
-  configured: boolean;
-  connected: boolean;
-  broker?: string;
-  error?: string;
-}
-
-export interface BrokerTestResult {
-  ok: boolean;
-  broker?: string;
-  error?: string;
-}
-
 export interface AssignmentsResponse {
   assignments: Record<string, DeviceConfig>;
   discovered_plugs: PlugTelemetry[];
@@ -61,10 +74,19 @@ export interface AssignmentsResponse {
   default_cooldown_sec: number;
 }
 
-const opGetBrokerStatus: Operation = {
-  id: 'get-broker-status',
+const opGetSettings: Operation = {
+  id: 'get-tasmota-settings',
   method: 'GET',
-  path: `${BASE}/broker/status`,
+  path: `${BASE}/settings`,
+  response: 'json',
+  anonymous: false,
+};
+
+const opPutSettings: Operation = {
+  id: 'put-tasmota-settings',
+  method: 'PUT',
+  path: `${BASE}/settings`,
+  body: 'application/json',
   response: 'json',
   anonymous: false,
 };
@@ -73,6 +95,7 @@ const opTestBroker: Operation = {
   id: 'test-broker-connection',
   method: 'POST',
   path: `${BASE}/broker/test`,
+  body: 'application/json',
   response: 'json',
   anonymous: false,
 };
@@ -131,10 +154,14 @@ const opPostAutoOff: Operation = {
 export function createApi(host: Pick<ModuleHost, 'client'>) {
   const t = host.client.transport;
   return {
-    getBrokerStatus: (signal?: AbortSignal) =>
-      t.call<BrokerStatus>(opGetBrokerStatus, {}, signal),
+    getSettings: (signal?: AbortSignal) =>
+      t.call<SettingsResponse>(opGetSettings, {}, signal),
 
-    testBroker: () => t.call<BrokerTestResult>(opTestBroker, {}),
+    saveSettings: (settings: Partial<TasmotaSettings>) =>
+      t.call<SettingsResponse>(opPutSettings, { body: settings }),
+
+    testBroker: (settings?: Partial<TasmotaSettings>) =>
+      t.call<BrokerTestResult>(opTestBroker, { body: settings ?? {} }),
 
     discoverPlugs: () =>
       t.call<{ plugs: PlugTelemetry[] }>(opDiscover, {}),
