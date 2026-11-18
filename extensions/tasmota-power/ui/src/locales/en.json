@@ -11,6 +11,7 @@
   "tasmota-power.section.turnOn": "Turn On",
   "tasmota-power.section.turnOff": "Turn Off",
   "tasmota-power.section.autoOffLabel": "Turn printer off when print finishes",
+  "tasmota-power.section.autoOffMoving": "Waiting for movement to stop...",
   "tasmota-power.section.autoOffPending": "Auto-off in {seconds}s",
   "tasmota-power.section.watts": "{watts} W",
   "tasmota-power.section.telemetry": "{watts} W · {voltage} V · {amps} A",
@@ -30,8 +31,10 @@
   "tasmota-power.settings.passwordLabel": "Password",
   "tasmota-power.settings.passwordPlaceholder": "Optional",
   "tasmota-power.settings.passwordSaved": "•••••••• (saved — leave blank to keep)",
-  "tasmota-power.settings.cooldownLabel": "Auto-off cooldown (seconds)",
+  "tasmota-power.settings.cooldownLabel": "Auto-off delay after movement stops (seconds)",
+  "tasmota-power.settings.cooldownHint": "Wait time after a print finishes and the bed/toolhead stops moving before cutting power (e.g. 60–120s for nozzle cooling, or 0s for immediate off once movement stops).",
   "tasmota-power.settings.clientIdLabel": "MQTT Client ID",
+  "tasmota-power.settings.clientIdHint": "Identifier used by this extension when connecting to your MQTT broker.",
   "tasmota-power.settings.connected": "Connected",
   "tasmota-power.settings.disconnected": "Disconnected",
   "tasmota-power.settings.notConfigured": "Enter your MQTT broker host and port below.",
@@ -43,7 +46,7 @@
   "tasmota-power.settings.testOk": "Connection to {broker} succeeded!",
   "tasmota-power.settings.testFail": "Connection failed: {error}",
   "tasmota-power.settings.assignmentsTitle": "Printer Plug Assignments",
-  "tasmota-power.settings.assignmentsDescription": "Assign one Tasmota smart plug to each printer. Plugs in use by another printer are locked so you cannot double-assign.",
+  "tasmota-power.settings.assignmentsDescription": "Select a Tasmota smart plug for each printer and click Save Assignment. Plugs already assigned to another printer are locked to prevent double-assignment.",
   "tasmota-power.settings.scanButton": "Scan for Plugs",
   "tasmota-power.settings.scanning": "Scanning...",
   "tasmota-power.settings.discoveredCount": "{count} plug(s) discovered",
@@ -53,5 +56,7 @@
   "tasmota-power.settings.unassign": "Unassign",
   "tasmota-power.settings.manualToggle": "Manual topic",
   "tasmota-power.settings.manualPlaceholder": "e.g. tasmota_FA3578",
-  "tasmota-power.settings.saveTopic": "Save"
+  "tasmota-power.settings.saveTopic": "Save Assignment",
+  "tasmota-power.settings.assignedSaved": "Saved",
+  "tasmota-power.settings.noPlugAssigned": "No plug assigned"
 }

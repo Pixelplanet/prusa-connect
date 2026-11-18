@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-11-18
+
+- Show connection test and save results in green on success and red on failure.
+- Clarify the Auto-off delay after movement stops field and Client ID with helpful descriptions.
+- Redesign the Printer Plug Assignments list with explicit Save Assignment button and saved confirmation badge.
+- Remove the redundant Toggle Power action from the printer header menu.
+- Detect axis movement (`/axis/x`, `/axis/y`, `/axis/z`) so power-off waits until the printer stops moving after a print finishes.
+- Log printer human-readable names alongside IDs under `tasmota-power-control`.
+
 ## 0.2.0 - 2026-11-18
 
 - Rename extension title to **Tasmota Power Control**.

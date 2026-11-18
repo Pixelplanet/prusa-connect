@@ -59,6 +59,7 @@ export interface PowerStatus {
   lock_reason?: string;
   printer_connected: boolean;
   printer_state?: string;
+  printer_moving?: boolean;
   auto_off_pending: boolean;
   auto_off_remaining_sec: number;
   default_cooldown_sec: number;
