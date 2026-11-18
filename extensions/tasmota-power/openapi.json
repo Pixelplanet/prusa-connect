@@ -42,6 +42,18 @@
         }
       }
     },
+    "/assignments": {
+      "get": {
+        "operationId": "get-plug-assignments",
+        "summary": "List all printer-to-Tasmota plug assignments and discovered plugs",
+        "description": "Returns all configured printer-to-Tasmota mappings, discovered Tasmota plugs, and MQTT broker status.",
+        "responses": {
+          "200": {
+            "description": "All printer plug assignments and discovered plugs"
+          }
+        }
+      }
+    },
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",

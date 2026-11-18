@@ -877,6 +877,29 @@ func (m *module) routes() http.Handler {
 		})
 	})
 
+	mux.HandleFunc("GET /assignments", func(w http.ResponseWriter, _ *http.Request) {
+		s := m.settings()
+		m.mu.RLock()
+		configsCopy := make(map[string]DeviceConfig, len(m.configs))
+		for k, v := range m.configs {
+			configsCopy[k] = v
+		}
+		discovered := m.discoveredListLocked()
+		up := m.mqttUp
+		broker := m.mqttBroker
+		errMsg := m.mqttError
+		m.mu.RUnlock()
+		answer(w, http.StatusOK, map[string]any{
+			"assignments":         configsCopy,
+			"discovered_plugs":    discovered,
+			"mqtt_configured":     strings.TrimSpace(s.MQTTBroker) != "",
+			"mqtt_connected":      up,
+			"mqtt_broker":         broker,
+			"mqtt_error":          errMsg,
+			"default_cooldown_sec": s.AutoOffCooldownSec,
+		})
+	})
+
 	mux.HandleFunc("GET /devices/{device_id}", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")
 		principal := routesapi.PrincipalOf(r)
@@ -895,6 +918,23 @@ func (m *module) routes() http.Handler {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			refuse(w, r, InvalidInput.New(err.Error()))
 			return
+		}
+		normalizedTopic := normalizeTopic(body.TasmotaTopic)
+		if normalizedTopic != "" {
+			m.mu.RLock()
+			var conflictID string
+			for otherID, otherCfg := range m.configs {
+				if otherID != deviceID && otherCfg.TasmotaTopic == normalizedTopic {
+					conflictID = otherID
+					break
+				}
+			}
+			m.mu.RUnlock()
+			if conflictID != "" {
+				refuse(w, r, TopicInUse.New("plug topic is already assigned to another printer").
+					With(fault.StringParam("topic", normalizedTopic), fault.StringParam("device", conflictID)))
+				return
+			}
 		}
 		if err := m.saveConfig(r.Context(), deviceID, body); err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
