@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.3.2")
+	release = extension.Version("0.4.0")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -54,6 +54,7 @@ var openAPI []byte
 // Settings holds structured MQTT broker and default auto-off settings.
 // Persisted in settings.json under the module's granted data directory.
 type Settings struct {
+	MQTTBuiltin        bool   `json:"mqtt_builtin"`
 	MQTTHost           string `json:"mqtt_host"`
 	MQTTPort           int    `json:"mqtt_port"`
 	MQTTTLS            bool   `json:"mqtt_tls"`
@@ -111,7 +112,7 @@ func normalizeSettings(s Settings) Settings {
 	s.MQTTHost = strings.TrimSpace(s.MQTTHost)
 	s.MQTTBroker = ""
 	if s.MQTTPort <= 0 {
-		if s.MQTTTLS {
+		if s.MQTTTLS && !s.MQTTBuiltin {
 			s.MQTTPort = defaultMQTTTLSPort
 		} else {
 			s.MQTTPort = defaultMQTTPort
@@ -155,7 +156,18 @@ func parseBrokerURL(raw string) (host string, port int, useTLS bool) {
 	return h, port, useTLS
 }
 
+func (s Settings) mqttConfigured() bool {
+	return s.MQTTBuiltin || strings.TrimSpace(s.MQTTHost) != ""
+}
+
 func (s Settings) brokerURL() string {
+	if s.MQTTBuiltin {
+		port := s.MQTTPort
+		if port <= 0 {
+			port = defaultMQTTPort
+		}
+		return fmt.Sprintf("tcp://%s", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	}
 	host := strings.TrimSpace(s.MQTTHost)
 	if host == "" {
 		return ""
@@ -186,7 +198,13 @@ func (s Settings) redacted() Settings {
 
 // DeviceConfig is persisted per printer in configs.json.
 type DeviceConfig struct {
+	Mode              string `json:"mode,omitempty"` // "mqtt" (default) or "http"
 	TasmotaTopic      string `json:"tasmota_topic"`
+	HTTPHost          string `json:"http_host,omitempty"`
+	HTTPUser          string `json:"http_user,omitempty"`
+	HTTPPassword      string `json:"http_password,omitempty"`
+	HasHTTPPassword   bool   `json:"has_http_password,omitempty"`
+	KeepHTTPPassword  bool   `json:"keep_http_password,omitempty"`
 	RelayIndex        int    `json:"relay_index,omitempty"`
 	AutoOffAfterPrint bool   `json:"auto_off_after_print"`
 	CooldownSec       *int   `json:"cooldown_sec,omitempty"`
@@ -200,6 +218,74 @@ func (c DeviceConfig) relayIndex() int {
 		return 8
 	}
 	return c.RelayIndex
+}
+
+func (c DeviceConfig) isHTTP() bool {
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == "http" {
+		return true
+	}
+	return mode == "" && normalizeHTTPHost(c.HTTPHost) != "" && normalizeTopic(c.TasmotaTopic) == ""
+}
+
+func (c DeviceConfig) configured() bool {
+	if c.isHTTP() {
+		return normalizeHTTPHost(c.HTTPHost) != ""
+	}
+	return normalizeTopic(c.TasmotaTopic) != ""
+}
+
+func (c DeviceConfig) plugKey() string {
+	if c.isHTTP() {
+		h := normalizeHTTPHost(c.HTTPHost)
+		if h == "" {
+			return ""
+		}
+		return "http:" + strings.ToLower(h)
+	}
+	return normalizeTopic(c.TasmotaTopic)
+}
+
+func (c DeviceConfig) httpBaseURL() string {
+	h := normalizeHTTPHost(c.HTTPHost)
+	if h == "" {
+		return ""
+	}
+	if strings.HasPrefix(h, "http://") || strings.HasPrefix(h, "https://") {
+		return h
+	}
+	return "http://" + h
+}
+
+func (c DeviceConfig) redacted() DeviceConfig {
+	out := c
+	out.HasHTTPPassword = c.HTTPPassword != ""
+	out.HTTPPassword = ""
+	out.KeepHTTPPassword = false
+	return out
+}
+
+func normalizeHTTPHost(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.ContainsAny(s, " \t\r\n") {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || strings.TrimSpace(u.Host) == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.TrimSpace(u.Host)
+	if scheme == "https" {
+		return "https://" + host
+	}
+	return host
 }
 
 // PlugTelemetry holds live MQTT state for a Tasmota topic.
@@ -450,6 +536,8 @@ type module struct {
 	mqttUp         bool
 	mqttBroker     string
 	mqttError      string
+	embeddedBroker *EmbeddedBroker
+	httpClient     *http.Client
 	plugs          map[string]*PlugTelemetry
 	configs        map[string]DeviceConfig
 	trackers       map[string]*autoOffTracker
@@ -461,12 +549,13 @@ type module struct {
 
 func newModule(conn *wirerpc.Conn) *module {
 	m := &module{
-		devices:  deviceapi.NewClient(conn),
-		plugs:    make(map[string]*PlugTelemetry),
-		configs:  make(map[string]DeviceConfig),
-		trackers: make(map[string]*autoOffTracker),
-		axes:     make(map[string]*axisSample),
-		usage:    make(map[string]*DeviceUsage),
+		devices:    deviceapi.NewClient(conn),
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		plugs:      make(map[string]*PlugTelemetry),
+		configs:    make(map[string]DeviceConfig),
+		trackers:   make(map[string]*autoOffTracker),
+		axes:       make(map[string]*axisSample),
+		usage:      make(map[string]*DeviceUsage),
 	}
 	def := defaultSettings()
 	m.held.Store(&def)
@@ -526,7 +615,7 @@ func run() error {
 				effective := normalizeSettings(sent)
 				if stored, ok := mod.loadSettingsFromDisk(); ok {
 					effective = stored
-				} else if effective.MQTTHost != "" {
+				} else if effective.MQTTHost != "" || effective.MQTTBuiltin {
 					// Migrate legacy host-passed settings into settings.json once.
 					_ = mod.writeSettingsToDisk(effective)
 				}
@@ -562,8 +651,10 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "%s %s serving on stdio (pid %d)\n", logName, release, os.Getpid())
 	if err := conn.Serve(ctx); err != nil {
+		mod.disconnectMQTT()
 		return fmt.Errorf("serve: %w", err)
 	}
+	mod.disconnectMQTT()
 	return nil
 }
 
@@ -651,13 +742,18 @@ func (m *module) loadAllConfigs() {
 
 	m.mu.Lock()
 	for id, cfg := range loaded {
-		m.configs[id] = cfg
+		m.configs[id] = normalizeDeviceConfig(cfg)
 	}
 	m.mu.Unlock()
 
 	for _, cfg := range loaded {
-		if cfg.TasmotaTopic != "" {
-			m.queryPlugState(cfg.TasmotaTopic)
+		ncfg := normalizeDeviceConfig(cfg)
+		if ncfg.isHTTP() && ncfg.HTTPHost != "" {
+			go func(c DeviceConfig) {
+				_ = m.pollHTTPPlug(context.Background(), c)
+			}(ncfg)
+		} else if ncfg.TasmotaTopic != "" {
+			m.queryPlugState(ncfg.TasmotaTopic)
 		}
 	}
 }
@@ -772,15 +868,48 @@ func (m *module) getConfig(_ context.Context, deviceID string) (DeviceConfig, er
 	return cfg, nil
 }
 
-func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig) error {
-	cfg.TasmotaTopic = normalizeTopic(cfg.TasmotaTopic)
-	if cfg.TasmotaTopic == "" {
+func normalizeDeviceConfig(cfg DeviceConfig) DeviceConfig {
+	if cfg.isHTTP() {
+		cfg.HTTPHost = normalizeHTTPHost(cfg.HTTPHost)
+		cfg.TasmotaTopic = ""
+		cfg.HTTPUser = strings.TrimSpace(cfg.HTTPUser)
+		if cfg.HTTPHost == "" {
+			cfg.Mode = ""
+			cfg.HTTPUser = ""
+			cfg.HTTPPassword = ""
+		} else {
+			cfg.Mode = "http"
+		}
+	} else {
+		cfg.TasmotaTopic = normalizeTopic(cfg.TasmotaTopic)
+		cfg.HTTPHost = ""
+		cfg.HTTPUser = ""
+		cfg.HTTPPassword = ""
+		if cfg.TasmotaTopic != "" {
+			cfg.Mode = "mqtt"
+		} else {
+			cfg.Mode = ""
+		}
+	}
+	cfg.HasHTTPPassword = cfg.HTTPPassword != ""
+	cfg.KeepHTTPPassword = false
+	if !cfg.configured() {
 		cfg.RelayIndex = 0
 	} else {
 		cfg.RelayIndex = cfg.relayIndex()
 	}
+	return cfg
+}
+
+func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig) error {
+	keepHTTPPw := cfg.KeepHTTPPassword
+	cfg = normalizeDeviceConfig(cfg)
 
 	m.mu.Lock()
+	if existing, ok := m.configs[deviceID]; ok && cfg.isHTTP() && cfg.HTTPHost != "" && cfg.HTTPPassword == "" && keepHTTPPw {
+		cfg.HTTPPassword = existing.HTTPPassword
+		cfg.HasHTTPPassword = cfg.HTTPPassword != ""
+	}
 	m.configs[deviceID] = cfg
 	if !cfg.AutoOffAfterPrint {
 		delete(m.trackers, deviceID)
@@ -798,7 +927,13 @@ func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig
 		}
 	}
 
-	if cfg.TasmotaTopic != "" {
+	if cfg.isHTTP() {
+		if cfg.HTTPHost != "" {
+			go func(c DeviceConfig) {
+				_ = m.pollHTTPPlug(context.Background(), c)
+			}(cfg)
+		}
+	} else if cfg.TasmotaTopic != "" {
 		m.queryPlugState(cfg.TasmotaTopic)
 	}
 	return nil
@@ -825,9 +960,14 @@ func (m *module) disconnectMQTT() {
 	c := m.mqttClient
 	m.mqttClient = nil
 	m.mqttUp = false
+	brk := m.embeddedBroker
+	m.embeddedBroker = nil
 	m.mu.Unlock()
 	if c != nil && c.IsConnected() {
 		c.Disconnect(250)
+	}
+	if brk != nil {
+		_ = brk.Close()
 	}
 }
 
@@ -853,6 +993,27 @@ func (m *module) reconnectMQTT(s Settings) {
 	m.mqttBroker = brokerURL
 	m.mqttError = ""
 	m.mu.Unlock()
+
+	if s.MQTTBuiltin {
+		port := s.MQTTPort
+		if port <= 0 {
+			port = defaultMQTTPort
+		}
+		listenAddr := fmt.Sprintf(":%d", port)
+		brk, err := StartEmbeddedBroker(listenAddr, s.MQTTUsername, s.MQTTPassword)
+		if err != nil {
+			errMsg := fmt.Sprintf("built-in broker listen %s failed: %v", listenAddr, err)
+			m.mu.Lock()
+			m.mqttError = errMsg
+			m.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "%s: %s\n", logName, errMsg)
+			return
+		}
+		m.mu.Lock()
+		m.embeddedBroker = brk
+		m.mu.Unlock()
+		fmt.Fprintf(os.Stderr, "%s: started built-in MQTT broker on %s\n", logName, listenAddr)
+	}
 
 	if brokerURL == "" {
 		return
@@ -955,8 +1116,37 @@ func (m *module) testBroker(override *Settings) (bool, string, string) {
 		return false, "", "Broker host is required"
 	}
 
+	dialURL := brokerURL
+	if candidate.MQTTBuiltin {
+		port := candidate.MQTTPort
+		if port <= 0 {
+			port = defaultMQTTPort
+		}
+		m.mu.RLock()
+		brk := m.embeddedBroker
+		sameRunningPort := brk != nil && brk.Port() == port
+		m.mu.RUnlock()
+
+		sameCreds := saved.MQTTBuiltin && saved.MQTTUsername == candidate.MQTTUsername && saved.MQTTPassword == candidate.MQTTPassword
+		if !sameRunningPort {
+			tmp, err := StartEmbeddedBroker(fmt.Sprintf(":%d", port), candidate.MQTTUsername, candidate.MQTTPassword)
+			if err != nil {
+				return false, brokerURL, fmt.Sprintf("built-in broker port %d unavailable: %v", port, err)
+			}
+			defer func() { _ = tmp.Close() }()
+		} else if !sameCreds {
+			// Port is already held by our own running embedded broker; test auth on an ephemeral loopback port.
+			tmp, err := StartEmbeddedBroker("127.0.0.1:0", candidate.MQTTUsername, candidate.MQTTPassword)
+			if err != nil {
+				return false, brokerURL, err.Error()
+			}
+			defer func() { _ = tmp.Close() }()
+			dialURL = fmt.Sprintf("tcp://127.0.0.1:%d", tmp.Port())
+		}
+	}
+
 	testOpts := mqtt.NewClientOptions().
-		AddBroker(brokerURL).
+		AddBroker(dialURL).
 		SetClientID(fmt.Sprintf("%s-test-%d", candidate.MQTTClientID, time.Now().UnixNano()%10000)).
 		SetConnectTimeout(5 * time.Second).
 		SetAutoReconnect(false).
@@ -993,6 +1183,9 @@ func (m *module) discoverPlugs() {
 func (m *module) discoveredListLocked() []PlugTelemetry {
 	out := make([]PlugTelemetry, 0, len(m.plugs))
 	for topic, p := range m.plugs {
+		if strings.HasPrefix(topic, "http:") {
+			continue
+		}
 		cp := p.clone()
 		cp.Topic = topic
 		out = append(out, cp)
@@ -1389,13 +1582,13 @@ func (m *module) queryAllKnownPlugs() {
 	seen := make(map[string]struct{})
 	var topics []string
 	for topic := range m.plugs {
-		if topic != "" {
+		if topic != "" && !strings.HasPrefix(topic, "http:") {
 			seen[topic] = struct{}{}
 			topics = append(topics, topic)
 		}
 	}
 	for _, cfg := range m.configs {
-		if cfg.TasmotaTopic != "" {
+		if !cfg.isHTTP() && cfg.TasmotaTopic != "" {
 			if _, ok := seen[cfg.TasmotaTopic]; !ok {
 				seen[cfg.TasmotaTopic] = struct{}{}
 				topics = append(topics, cfg.TasmotaTopic)
@@ -1413,19 +1606,28 @@ func (m *module) pollAssignedPlugsEnergy() {
 	m.mu.RLock()
 	c := m.mqttClient
 	up := m.mqttUp
-	if c == nil || !up {
-		m.mu.RUnlock()
-		return
-	}
 	var statusPubs []string
 	var unknownPubs []string
+	var httpConfigs []DeviceConfig
 	seenStatus := make(map[string]struct{})
 	seenUnknown := make(map[string]struct{})
+	seenHTTP := make(map[string]struct{})
 	for _, cfg := range m.configs {
-		t := cfg.TasmotaTopic
-		if t == "" {
+		if !cfg.configured() {
 			continue
 		}
+		if cfg.isHTTP() {
+			key := cfg.plugKey()
+			if _, dup := seenHTTP[key]; !dup {
+				seenHTTP[key] = struct{}{}
+				httpConfigs = append(httpConfigs, cfg)
+			}
+			continue
+		}
+		if c == nil || !up {
+			continue
+		}
+		t := cfg.TasmotaTopic
 		plug := m.plugs[t]
 		if _, dup := seenStatus[t]; !dup {
 			seenStatus[t] = struct{}{}
@@ -1454,6 +1656,17 @@ func (m *module) pollAssignedPlugsEnergy() {
 	}
 	for _, pub := range statusPubs {
 		c.Publish(pub, 1, false, "8")
+	}
+	if len(httpConfigs) > 0 {
+		var wg sync.WaitGroup
+		for _, cfg := range httpConfigs {
+			wg.Add(1)
+			go func(hc DeviceConfig) {
+				defer wg.Done()
+				_ = m.pollHTTPPlug(context.Background(), hc)
+			}(cfg)
+		}
+		wg.Wait()
 	}
 }
 
@@ -1540,6 +1753,246 @@ func (m *module) switchPlugVerified(ctx context.Context, topic string, relayInde
 			return ctx.Err()
 		}
 	}
+}
+
+func (m *module) getHTTPClient() *http.Client {
+	if m.httpClient != nil {
+		return m.httpClient
+	}
+	return &http.Client{Timeout: 5 * time.Second}
+}
+
+func (m *module) tasmotaHTTPGet(ctx context.Context, cfg DeviceConfig, cmnd string) ([]byte, error) {
+	base := cfg.httpBaseURL()
+	if base == "" {
+		return nil, errors.New("HTTP plug host or IP is required")
+	}
+	u, err := url.Parse(base + "/cm")
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	if cfg.HTTPPassword != "" {
+		user := strings.TrimSpace(cfg.HTTPUser)
+		if user == "" {
+			user = "admin"
+		}
+		q.Set("user", user)
+		q.Set("password", cfg.HTTPPassword)
+	}
+	q.Set("cmnd", cmnd)
+	u.RawQuery = q.Encode()
+
+	reqCtx := ctx
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		reqCtx, cancel = context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.getHTTPClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, errors.New("HTTP authentication failed (check Web Password)")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("plug returned HTTP %d", resp.StatusCode)
+	}
+
+	var warnCheck struct {
+		Warning string `json:"WARNING"`
+	}
+	if json.Unmarshal(body, &warnCheck) == nil && warnCheck.Warning != "" {
+		return nil, fmt.Errorf("plug auth error: %s", warnCheck.Warning)
+	}
+	return body, nil
+}
+
+func (m *module) pollHTTPPlug(ctx context.Context, cfg DeviceConfig) error {
+	key := cfg.plugKey()
+	if key == "" {
+		return errors.New("HTTP plug host is required")
+	}
+
+	raw, err := m.tasmotaHTTPGet(ctx, cfg, "Status 0")
+	if err != nil {
+		m.mu.Lock()
+		plug := m.plugs[key]
+		if plug == nil {
+			plug = &PlugTelemetry{Topic: key, FriendlyName: cfg.HTTPHost, Power: "UNKNOWN"}
+			m.plugs[key] = plug
+		}
+		offline := false
+		plug.Online = &offline
+		plug.LastError = err.Error()
+		m.mu.Unlock()
+		return err
+	}
+
+	var parsed struct {
+		Status struct {
+			DeviceName   string   `json:"DeviceName"`
+			FriendlyName []string `json:"FriendlyName"`
+		} `json:"Status"`
+		StatusFWR struct {
+			Hardware string `json:"Hardware"`
+		} `json:"StatusFWR"`
+		StatusSNS struct {
+			ENERGY *energyPayload `json:"ENERGY"`
+		} `json:"StatusSNS"`
+		StatusSTS map[string]json.RawMessage `json:"StatusSTS"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return fmt.Errorf("invalid Status 0 JSON from plug: %w", err)
+	}
+
+	now := time.Now()
+	online := true
+	m.mu.Lock()
+	plug := m.plugs[key]
+	if plug == nil {
+		plug = &PlugTelemetry{Topic: key, Power: "UNKNOWN"}
+		m.plugs[key] = plug
+	}
+	plug.Topic = key
+	plug.Online = &online
+	plug.LastError = ""
+	plug.UpdatedAt = &now
+
+	if parsed.StatusFWR.Hardware != "" && plug.Model == "" {
+		plug.Model = parsed.StatusFWR.Hardware
+	}
+	if len(parsed.Status.FriendlyName) > 0 {
+		plug.RelayNames = make([]string, len(parsed.Status.FriendlyName))
+		copy(plug.RelayNames, parsed.Status.FriendlyName)
+		if parsed.Status.FriendlyName[0] != "" {
+			plug.FriendlyName = parsed.Status.FriendlyName[0]
+		}
+	}
+	if plug.FriendlyName == "" && parsed.Status.DeviceName != "" {
+		plug.FriendlyName = parsed.Status.DeviceName
+	}
+	if plug.FriendlyName == "" {
+		plug.FriendlyName = cfg.HTTPHost
+	}
+
+	maxRelay := plug.RelayCount
+	for k, v := range parsed.StatusSTS {
+		idx := parsePowerLeafIndex(k)
+		if idx <= 0 {
+			continue
+		}
+		var stateVal string
+		if json.Unmarshal(v, &stateVal) != nil {
+			continue
+		}
+		if norm, ok := plug.normalizePowerValue(stateVal); ok {
+			plug.setRelayState(idx, norm)
+			if idx > maxRelay {
+				maxRelay = idx
+			}
+		}
+	}
+	if len(parsed.Status.FriendlyName) > maxRelay {
+		maxRelay = len(parsed.Status.FriendlyName)
+	}
+	if maxRelay > 0 {
+		plug.RelayCount = maxRelay
+	}
+	if parsed.StatusSNS.ENERGY != nil {
+		applyEnergyReading(plug, parsed.StatusSNS.ENERGY, now)
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *module) switchHTTPPlugVerified(ctx context.Context, cfg DeviceConfig, relayIndex int, wantOn bool) error {
+	key := cfg.plugKey()
+	if key == "" {
+		return errors.New("HTTP plug host is required")
+	}
+	relayIndex = normalizeRelayIndex(relayIndex)
+	wantState := "OFF"
+	cmdVal := "0"
+	if wantOn {
+		wantState = "ON"
+		cmdVal = "1"
+	}
+
+	raw, err := m.tasmotaHTTPGet(ctx, cfg, fmt.Sprintf("POWER%d %s", relayIndex, cmdVal))
+	if err != nil {
+		return err
+	}
+
+	var respMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &respMap); err != nil {
+		return fmt.Errorf("invalid HTTP response from plug: %w", err)
+	}
+	if cmdRaw, ok := respMap["Command"]; ok {
+		var cmdStatus string
+		if json.Unmarshal(cmdRaw, &cmdStatus) == nil &&
+			(strings.EqualFold(cmdStatus, "Error") || strings.EqualFold(cmdStatus, "Unknown")) {
+			return fmt.Errorf("plug rejected command POWER%d (check Relay index)", relayIndex)
+		}
+	}
+
+	now := time.Now()
+	online := true
+	m.mu.Lock()
+	plug := m.plugs[key]
+	if plug == nil {
+		plug = &PlugTelemetry{Topic: key, FriendlyName: cfg.HTTPHost, Power: "UNKNOWN"}
+		m.plugs[key] = plug
+	}
+
+	matchedState := ""
+	for k, v := range respMap {
+		idx := parsePowerLeafIndex(k)
+		if idx != relayIndex {
+			continue
+		}
+		var stateVal string
+		if json.Unmarshal(v, &stateVal) != nil {
+			continue
+		}
+		if norm, ok := plug.normalizePowerValue(stateVal); ok {
+			plug.setRelayState(idx, norm)
+			matchedState = norm
+		}
+	}
+	if matchedState != "" {
+		plug.Online = &online
+		plug.LastError = ""
+		plug.UpdatedAt = &now
+	}
+	m.mu.Unlock()
+
+	if matchedState == wantState {
+		return nil
+	}
+	if matchedState != "" {
+		return fmt.Errorf("plug refused to switch (reported %s; check PowerLock or PowerOnState)", matchedState)
+	}
+	return errors.New("plug did not confirm state change in HTTP response")
+}
+
+func (m *module) switchDevicePower(ctx context.Context, cfg DeviceConfig, wantOn bool) error {
+	if cfg.isHTTP() {
+		return m.switchHTTPPlugVerified(ctx, cfg, cfg.relayIndex(), wantOn)
+	}
+	return m.switchPlugVerified(ctx, cfg.TasmotaTopic, cfg.relayIndex(), wantOn)
 }
 
 // --- Printer Activity & Safety Interlock ---
@@ -1763,7 +2216,7 @@ func (m *module) updateDeviceUsage(deviceID string, cfg DeviceConfig, safety pri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	p := m.plugs[cfg.TasmotaTopic]
+	p := m.plugs[cfg.plugKey()]
 	if p == nil {
 		return false, false
 	}
@@ -1917,7 +2370,7 @@ func (m *module) stepAutoOff(ctx context.Context) {
 	m.mu.RLock()
 	assigned := make(map[string]DeviceConfig)
 	for id, cfg := range m.configs {
-		if cfg.TasmotaTopic != "" {
+		if cfg.configured() {
 			assigned[id] = cfg
 		}
 	}
@@ -1987,12 +2440,12 @@ func (m *module) stepAutoOff(ctx context.Context) {
 			continue
 		}
 
-		if err := m.switchPlugVerified(ctx, cfg.TasmotaTopic, cfg.relayIndex(), false); err != nil {
+		if err := m.switchDevicePower(ctx, cfg, false); err != nil {
 			fmt.Fprintf(os.Stderr, "%s: auto-off failed for printer %q [%s]: %v\n", logName, safety.DeviceName, deviceID, err)
 			continue
 		}
 
-		fmt.Fprintf(os.Stderr, "%s: auto-off triggered for printer %q [%s] (topic %s relay %d)\n", logName, safety.DeviceName, deviceID, cfg.TasmotaTopic, cfg.relayIndex())
+		fmt.Fprintf(os.Stderr, "%s: auto-off triggered for printer %q [%s] (plug %s relay %d)\n", logName, safety.DeviceName, deviceID, cfg.plugKey(), cfg.relayIndex())
 		cfg.AutoOffAfterPrint = false
 		_ = m.saveConfig(ctx, deviceID, cfg)
 	}
@@ -2007,11 +2460,14 @@ func (m *module) stepAutoOff(ctx context.Context) {
 // --- HTTP Routes ---
 
 type settingsResponse struct {
-	Settings       Settings `json:"settings"`
-	MQTTConfigured bool     `json:"mqtt_configured"`
-	MQTTConnected  bool     `json:"mqtt_connected"`
-	MQTTBroker     string   `json:"mqtt_broker,omitempty"`
-	MQTTError      string   `json:"mqtt_error,omitempty"`
+	Settings           Settings `json:"settings"`
+	MQTTConfigured     bool     `json:"mqtt_configured"`
+	MQTTConnected      bool     `json:"mqtt_connected"`
+	MQTTBroker         string   `json:"mqtt_broker,omitempty"`
+	MQTTError          string   `json:"mqtt_error,omitempty"`
+	MQTTBuiltinRunning bool     `json:"mqtt_builtin_running"`
+	MQTTBuiltinPort    int      `json:"mqtt_builtin_port,omitempty"`
+	MQTTBuiltinClients int      `json:"mqtt_builtin_clients"`
 }
 
 func (m *module) buildSettingsResponse() settingsResponse {
@@ -2020,14 +2476,26 @@ func (m *module) buildSettingsResponse() settingsResponse {
 	up := m.mqttUp
 	broker := m.mqttBroker
 	errMsg := m.mqttError
+	brk := m.embeddedBroker
 	m.mu.RUnlock()
 
+	builtinRunning := brk != nil
+	builtinPort := 0
+	builtinClients := 0
+	if brk != nil {
+		builtinPort = brk.Port()
+		builtinClients = brk.ClientCount()
+	}
+
 	return settingsResponse{
-		Settings:       s.redacted(),
-		MQTTConfigured: strings.TrimSpace(s.MQTTHost) != "",
-		MQTTConnected:  up,
-		MQTTBroker:     broker,
-		MQTTError:      errMsg,
+		Settings:           s.redacted(),
+		MQTTConfigured:     s.mqttConfigured(),
+		MQTTConnected:      up,
+		MQTTBroker:         broker,
+		MQTTError:          errMsg,
+		MQTTBuiltinRunning: builtinRunning,
+		MQTTBuiltinPort:    builtinPort,
+		MQTTBuiltinClients: builtinClients,
 	}
 }
 
@@ -2066,7 +2534,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		return statusResponse{}, err
 	}
 
-	if cfg.TasmotaTopic != "" {
+	if cfg.configured() {
 		if dirty, _ := m.updateDeviceUsage(deviceID, cfg, safety); dirty {
 			_ = m.saveAllUsage()
 		}
@@ -2083,8 +2551,8 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 	mqttBroker := m.mqttBroker
 	mqttErr := m.mqttError
 	var plugCopy *PlugTelemetry
-	if cfg.TasmotaTopic != "" {
-		if p, ok := m.plugs[cfg.TasmotaTopic]; ok {
+	if key := cfg.plugKey(); key != "" {
+		if p, ok := m.plugs[key]; ok {
 			cp := p.clone()
 			relayIdx := cfg.relayIndex()
 			cp.Power = cp.relayState(relayIdx)
@@ -2092,6 +2560,8 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 				cp.FriendlyName = cp.RelayNames[relayIdx-1]
 			}
 			plugCopy = &cp
+		} else if cfg.isHTTP() {
+			plugCopy = &PlugTelemetry{Topic: key, FriendlyName: cfg.HTTPHost, Power: "UNKNOWN"}
 		} else {
 			plugCopy = &PlugTelemetry{Topic: cfg.TasmotaTopic, Power: "UNKNOWN"}
 		}
@@ -2130,11 +2600,11 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 
 	return statusResponse{
 		DeviceID:            deviceID,
-		MQTTConfigured:      strings.TrimSpace(s.MQTTHost) != "",
+		MQTTConfigured:      s.mqttConfigured(),
 		MQTTConnected:       mqttUp,
 		MQTTBroker:          mqttBroker,
 		MQTTError:           mqttErr,
-		Config:              cfg,
+		Config:              cfg.redacted(),
 		Plug:                plugCopy,
 		DiscoveredPlugs:     discovered,
 		CanTurnOff:          safety.CanTurnOff,
@@ -2220,7 +2690,7 @@ func (m *module) routes() http.Handler {
 		m.mu.RLock()
 		configsCopy := make(map[string]DeviceConfig, len(m.configs))
 		for k, v := range m.configs {
-			configsCopy[k] = v
+			configsCopy[k] = v.redacted()
 		}
 		discovered := m.discoveredListLocked()
 		up := m.mqttUp
@@ -2230,7 +2700,7 @@ func (m *module) routes() http.Handler {
 		answer(w, http.StatusOK, map[string]any{
 			"assignments":          configsCopy,
 			"discovered_plugs":     discovered,
-			"mqtt_configured":      strings.TrimSpace(s.MQTTHost) != "",
+			"mqtt_configured":      s.mqttConfigured(),
 			"mqtt_connected":       up,
 			"mqtt_broker":          broker,
 			"mqtt_error":           errMsg,
@@ -2257,13 +2727,23 @@ func (m *module) routes() http.Handler {
 			refuse(w, r, InvalidInput.New(err.Error()))
 			return
 		}
-		normalizedTopic := normalizeTopic(body.TasmotaTopic)
-		relayIdx := body.relayIndex()
-		if normalizedTopic != "" {
+		mode := strings.ToLower(strings.TrimSpace(body.Mode))
+		if mode != "" && mode != "mqtt" && mode != "http" {
+			refuse(w, r, InvalidInput.New("mode must be mqtt or http"))
+			return
+		}
+		if body.isHTTP() && strings.TrimSpace(body.HTTPHost) != "" && normalizeHTTPHost(body.HTTPHost) == "" {
+			refuse(w, r, InvalidInput.New("invalid HTTP plug IP, hostname, or URL"))
+			return
+		}
+		normalizedCfg := normalizeDeviceConfig(body)
+		candidateKey := normalizedCfg.plugKey()
+		relayIdx := normalizedCfg.relayIndex()
+		if candidateKey != "" {
 			m.mu.RLock()
 			var conflictID string
 			for otherID, otherCfg := range m.configs {
-				if otherID != deviceID && otherCfg.TasmotaTopic == normalizedTopic && otherCfg.relayIndex() == relayIdx {
+				if otherID != deviceID && otherCfg.configured() && otherCfg.plugKey() == candidateKey && otherCfg.relayIndex() == relayIdx {
 					conflictID = otherID
 					break
 				}
@@ -2271,13 +2751,17 @@ func (m *module) routes() http.Handler {
 			m.mu.RUnlock()
 			if conflictID != "" {
 				refuse(w, r, TopicInUse.New("plug relay is already assigned to another printer").
-					With(fault.StringParam("topic", normalizedTopic), fault.StringParam("device", conflictID)))
+					With(fault.StringParam("topic", candidateKey), fault.StringParam("device", conflictID)))
 				return
 			}
 		}
 		if err := m.saveConfig(r.Context(), deviceID, body); err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
 			return
+		}
+		if normalizedCfg.isHTTP() && candidateKey != "" {
+			savedCfg, _ := m.getConfig(r.Context(), deviceID)
+			_ = m.pollHTTPPlug(r.Context(), savedCfg)
 		}
 		resp, err := m.buildStatus(r.Context(), principal, deviceID)
 		if err != nil {
@@ -2308,14 +2792,14 @@ func (m *module) routes() http.Handler {
 			refuse(w, r, InternalError.New(err.Error()))
 			return
 		}
-		if cfg.TasmotaTopic == "" {
-			refuse(w, r, NotConfigured.New("no Tasmota topic configured for this printer"))
+		if !cfg.configured() {
+			refuse(w, r, NotConfigured.New("no Tasmota plug configured for this printer"))
 			return
 		}
 
 		if action == "toggle" {
 			m.mu.RLock()
-			p := m.plugs[cfg.TasmotaTopic]
+			p := m.plugs[cfg.plugKey()]
 			cur := ""
 			if p != nil {
 				cur = p.relayState(cfg.relayIndex())
@@ -2340,7 +2824,7 @@ func (m *module) routes() http.Handler {
 			}
 		}
 
-		if err := m.switchPlugVerified(r.Context(), cfg.TasmotaTopic, cfg.relayIndex(), action == "on"); err != nil {
+		if err := m.switchDevicePower(r.Context(), cfg, action == "on"); err != nil {
 			if errors.Is(err, errBrokerOffline) {
 				refuse(w, r, BrokerOffline.New(err.Error()))
 			} else {
@@ -2349,10 +2833,14 @@ func (m *module) routes() http.Handler {
 			return
 		}
 
-		go func(topic string) {
+		go func(c DeviceConfig) {
 			time.Sleep(400 * time.Millisecond)
-			m.queryPlugState(topic)
-		}(cfg.TasmotaTopic)
+			if c.isHTTP() {
+				_ = m.pollHTTPPlug(context.Background(), c)
+			} else {
+				m.queryPlugState(c.TasmotaTopic)
+			}
+		}(cfg)
 
 		resp, err := m.buildStatus(r.Context(), principal, deviceID)
 		if err != nil {
@@ -2378,8 +2866,8 @@ func (m *module) routes() http.Handler {
 			refuse(w, r, InternalError.New(err.Error()))
 			return
 		}
-		if cfg.TasmotaTopic == "" {
-			refuse(w, r, NotConfigured.New("no Tasmota topic configured for this printer"))
+		if !cfg.configured() {
+			refuse(w, r, NotConfigured.New("no Tasmota plug configured for this printer"))
 			return
 		}
 		cfg.AutoOffAfterPrint = body.Enabled

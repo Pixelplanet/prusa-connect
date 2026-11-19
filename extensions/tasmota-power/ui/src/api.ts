@@ -4,6 +4,7 @@ import type { ModuleHost } from '@prusa/connect-ui/slots';
 const BASE = '/api/v1/modules/com.github.aux.prusa3d.tasmota-power';
 
 export interface TasmotaSettings {
+  mqtt_builtin: boolean;
   mqtt_host: string;
   mqtt_port: number;
   mqtt_tls: boolean;
@@ -22,6 +23,9 @@ export interface SettingsResponse {
   mqtt_connected: boolean;
   mqtt_broker?: string;
   mqtt_error?: string;
+  mqtt_builtin_running: boolean;
+  mqtt_builtin_port?: number;
+  mqtt_builtin_clients: number;
 }
 
 export interface BrokerTestResult {
@@ -31,7 +35,13 @@ export interface BrokerTestResult {
 }
 
 export interface DeviceConfig {
+  mode?: 'mqtt' | 'http' | '';
   tasmota_topic: string;
+  http_host?: string;
+  http_user?: string;
+  http_password?: string;
+  has_http_password?: boolean;
+  keep_http_password?: boolean;
   relay_index?: number;
   auto_off_after_print: boolean;
   cooldown_sec?: number;

@@ -33,7 +33,7 @@
   });
 </script>
 
-{#if status?.config.tasmota_topic && status.plug}
+{#if (status?.config.tasmota_topic || status?.config.http_host) && status.plug}
   <span class="text-xs text-muted-foreground">
     {#if status.plug.power === 'ON'}
       {#if status.plug.power_watts !== undefined}

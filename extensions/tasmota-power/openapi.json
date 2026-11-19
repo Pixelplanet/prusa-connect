@@ -2,15 +2,15 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.3.2",
-    "description": "Tasmota MQTT smart plug control and monitoring per printer."
+    "version": "0.4.0",
+    "description": "Tasmota MQTT and Direct HTTP smart plug control and monitoring per printer."
   },
   "paths": {
     "/settings": {
       "get": {
         "operationId": "get-tasmota-settings",
         "summary": "Get MQTT broker settings and live connection status",
-        "description": "Returns the structured MQTT broker configuration (with password redacted), connection state, and last error.",
+        "description": "Returns the structured external or built-in MQTT broker configuration (with password redacted), connection state, embedded broker status, and last error.",
         "responses": {
           "200": {
             "description": "Current MQTT settings and broker status"
@@ -20,7 +20,7 @@
       "put": {
         "operationId": "put-tasmota-settings",
         "summary": "Save MQTT broker settings and reconnect",
-        "description": "Saves structured MQTT broker settings to settings.json and reconnects the MQTT client.",
+        "description": "Saves structured MQTT broker settings (including optional built-in MQTT broker toggle) to settings.json and restarts/reconnects MQTT.",
         "responses": {
           "200": {
             "description": "Updated MQTT settings and broker status"
@@ -32,7 +32,7 @@
       "post": {
         "operationId": "test-broker-connection",
         "summary": "Test MQTT broker connectivity",
-        "description": "Tests connecting to the provided (or saved) MQTT broker settings and returns whether the connection succeeded or the exact error.",
+        "description": "Tests connecting to the provided (or saved) external or built-in MQTT broker settings and returns whether the connection succeeded or the exact error.",
         "responses": {
           "200": {
             "description": "MQTT broker test result"
@@ -92,8 +92,8 @@
     "/devices/{device_id}/config": {
       "put": {
         "operationId": "put-device-power-config",
-        "summary": "Configure Tasmota MQTT topic and auto-off settings for a printer",
-        "description": "Persists the printer's Tasmota MQTT topic, auto-off-after-print flag, and optional cooldown duration.",
+        "summary": "Configure Tasmota MQTT or Direct HTTP plug and auto-off settings for a printer",
+        "description": "Persists the printer's plug connection mode (mqtt or http), Tasmota MQTT topic or HTTP IP/host and web password, relay index, auto-off-after-print flag, and optional cooldown duration.",
         "parameters": [
           {
             "name": "device_id",
@@ -113,7 +113,7 @@
       "post": {
         "operationId": "post-device-power",
         "summary": "Turn a printer's Tasmota plug ON, OFF, or TOGGLE",
-        "description": "Publishes ON or OFF to cmnd/<topic>/Power via MQTT. Refuses OFF or TOGGLE-to-OFF with 409 Conflict if the printer is actively printing or busy.",
+        "description": "Switches the printer's plug relay via MQTT or Direct HTTP Tasmota /cm command and verifies the resulting relay state. Refuses OFF or TOGGLE-to-OFF with 409 Conflict if the printer is actively printing or busy.",
         "parameters": [
           {
             "name": "device_id",
