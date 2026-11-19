@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-11-19
+
+- Add optional built-in pure-Go MQTT 3.1/3.1.1 broker (`mqtt_builtin`) in Settings so Tasmota plugs can connect directly without running an external Mosquitto broker.
+- Add per-printer Direct HTTP plug connection mode (`mode: "http"`, `http_host`, optional Tasmota Web Password) polling `/cm?cmnd=Status 0` every 5s and switching via verified `POWER<n>` HTTP commands without needing MQTT at all.
+- Add end-to-end Go tests (`TestEmbeddedMQTTBrokerEndToEnd` and `TestDirectHTTPTasmotaPollAndSwitch`).
+
 ## 0.3.2 - 2026-11-19
 
 - Remove the duplicate sampling interval badge above the power usage graph while keeping the explanatory caption below the chart.

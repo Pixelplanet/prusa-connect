@@ -36,6 +36,27 @@
   let errorMsg = $state('');
   let confirmingOff = $state(false);
 
+  const isHttpPlug = $derived(
+    Boolean(
+      status &&
+        (status.config.mode === 'http' ||
+          (status.config.http_host && !status.config.tasmota_topic)),
+    ),
+  );
+  const isAssigned = $derived(
+    Boolean(
+      status &&
+        (isHttpPlug ? status.config.http_host : status.config.tasmota_topic),
+    ),
+  );
+  const plugTarget = $derived(
+    status
+      ? isHttpPlug
+        ? (status.config.http_host ?? '')
+        : status.config.tasmota_topic
+      : '',
+  );
+
   function requestTurnOff() {
     if (status?.confirm_turn_off === false) {
       void handlePower('off');
@@ -185,7 +206,7 @@
 {#if status}
   <Card density="compact">
     <CardContent class="flex flex-col gap-3">
-      {#if !status.config.tasmota_topic}
+      {#if !isAssigned}
         <div class="flex items-center justify-between gap-3">
           <p class="text-xs text-muted-foreground">
             {t('tasmota-power.section.notAssigned')}
@@ -197,11 +218,11 @@
             {t('tasmota-power.section.configureLink')}
           </a>
         </div>
-      {:else if !status.mqtt_configured}
+      {:else if !isHttpPlug && !status.mqtt_configured}
         <p class="text-xs text-muted-foreground">
           {t('tasmota-power.section.brokerUnconfigured')}
         </p>
-      {:else if !status.mqtt_connected}
+      {:else if !isHttpPlug && !status.mqtt_connected}
         <p class="text-xs text-destructive">
           {#if status.mqtt_error}
             {t('tasmota-power.section.brokerOfflineReason', {
@@ -234,8 +255,11 @@
 
             <span class="text-xs text-muted-foreground">
               {status.plug?.friendly_name
-                ? `${status.plug.friendly_name} (${status.config.tasmota_topic})`
-                : status.config.tasmota_topic}
+                ? `${status.plug.friendly_name} (${plugTarget})`
+                : plugTarget}
+              {#if isHttpPlug}
+                · {t('tasmota-power.settings.httpBadge')}
+              {/if}
               {#if (status.config.relay_index ?? 1) > 1 || (status.plug?.relay_count ?? 1) > 1}
                 · {t('tasmota-power.section.relayBadge', {
                   relay: status.config.relay_index ?? 1,
@@ -245,7 +269,15 @@
 
             {#if status.plug?.online === false}
               <span class="text-xs text-destructive">
-                {t('tasmota-power.section.plugOfflineHint')}
+                {#if isHttpPlug}
+                  {status.plug?.last_error
+                    ? t('tasmota-power.section.plugOfflineHintHttp', {
+                        reason: status.plug.last_error,
+                      })
+                    : t('tasmota-power.section.plugOfflineHintHttpGeneric')}
+                {:else}
+                  {t('tasmota-power.section.plugOfflineHint')}
+                {/if}
               </span>
             {:else if status.plug?.power === 'ON' && status.plug.power_watts !== undefined}
               <span class="text-xs text-muted-foreground tabular-nums">
@@ -564,8 +596,8 @@
         <AlertDialogDescription>
           {t('tasmota-power.section.confirmOffDescription', {
             plug: status.plug?.friendly_name
-              ? `${status.plug.friendly_name} (${status.config.tasmota_topic})`
-              : status.config.tasmota_topic,
+              ? `${status.plug.friendly_name} (${plugTarget})`
+              : plugTarget,
           })}
         </AlertDialogDescription>
       </AlertDialogHeader>

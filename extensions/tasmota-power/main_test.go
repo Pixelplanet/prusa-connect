@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 func TestNormalizeTopicStripsPrefixAndPowerSuffix(t *testing.T) {
@@ -256,5 +263,229 @@ func TestTasmotaCommandErrorWaiterAndEnergyStatus(t *testing.T) {
 	}
 	if plug.relayState(1) != "ON" {
 		t.Errorf("relay 1 after STATUS11 = %q, want ON", plug.relayState(1))
+	}
+}
+
+func TestEmbeddedMQTTBrokerEndToEnd(t *testing.T) {
+	brk, err := StartEmbeddedBroker("127.0.0.1:0", "prusa", "secret")
+	if err != nil {
+		t.Fatalf("StartEmbeddedBroker: %v", err)
+	}
+	defer func() { _ = brk.Close() }()
+
+	brokerURL := fmt.Sprintf("tcp://127.0.0.1:%d", brk.Port())
+
+	// Wrong credentials must be rejected.
+	badOpts := mqtt.NewClientOptions().
+		AddBroker(brokerURL).
+		SetClientID("bad-client").
+		SetUsername("prusa").
+		SetPassword("wrong").
+		SetConnectTimeout(2 * time.Second).
+		SetAutoReconnect(false)
+	badClient := mqtt.NewClient(badOpts)
+	if tok := badClient.Connect(); tok.WaitTimeout(3*time.Second) && tok.Error() == nil {
+		badClient.Disconnect(50)
+		t.Fatal("expected authentication error for wrong password, got nil")
+	}
+
+	// Simulate a smart plug publishing retained LWT and answering cmnd/+/POWER1.
+	plugOpts := mqtt.NewClientOptions().
+		AddBroker(brokerURL).
+		SetClientID("tasmota-sim").
+		SetUsername("prusa").
+		SetPassword("secret").
+		SetConnectTimeout(2 * time.Second).
+		SetAutoReconnect(false)
+	plugClient := mqtt.NewClient(plugOpts)
+	if tok := plugClient.Connect(); !tok.WaitTimeout(3*time.Second) || tok.Error() != nil {
+		t.Fatalf("plugClient connect failed: %v", tok.Error())
+	}
+	defer plugClient.Disconnect(50)
+
+	if tok := plugClient.Publish("tele/ec_plug/LWT", 1, true, "Online"); !tok.WaitTimeout(2*time.Second) || tok.Error() != nil {
+		t.Fatalf("publish retained LWT failed: %v", tok.Error())
+	}
+
+	// Extension module connects using module client and switches plug via embedded broker.
+	m := newModule(nil)
+	s := normalizeSettings(Settings{
+		MQTTBuiltin:  true,
+		MQTTHost:     "127.0.0.1",
+		MQTTPort:     brk.Port(),
+		MQTTUsername: "prusa",
+		MQTTPassword: "secret",
+		MQTTClientID: "ext-test",
+	})
+	modOpts := m.buildMQTTOptions(s, brokerURL, "ext-test").SetAutoReconnect(false)
+	modClient := mqtt.NewClient(modOpts)
+	if tok := modClient.Connect(); !tok.WaitTimeout(3*time.Second) || tok.Error() != nil {
+		t.Fatalf("modClient connect failed: %v", tok.Error())
+	}
+	defer modClient.Disconnect(50)
+
+	m.mu.Lock()
+	m.mqttClient = modClient
+	m.mqttUp = true
+	m.mu.Unlock()
+
+	lwtCh := make(chan string, 1)
+	if tok := modClient.Subscribe("tele/+/LWT", 0, func(c mqtt.Client, msg mqtt.Message) {
+		m.onMQTTMessage(c, msg)
+		select {
+		case lwtCh <- string(msg.Payload()):
+		default:
+		}
+	}); !tok.WaitTimeout(2*time.Second) || tok.Error() != nil {
+		t.Fatalf("subscribe LWT failed: %v", tok.Error())
+	}
+	if tok := modClient.Subscribe("stat/+/+", 0, m.onMQTTMessage); !tok.WaitTimeout(2*time.Second) || tok.Error() != nil {
+		t.Fatalf("subscribe stat failed: %v", tok.Error())
+	}
+
+	// Retained Online LWT must arrive immediately on Subscribe.
+	select {
+	case got := <-lwtCh:
+		if got != "Online" {
+			t.Fatalf("retained LWT = %q, want Online", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for retained LWT delivery")
+	}
+
+	if got := brk.ClientCount(); got != 2 {
+		t.Errorf("ClientCount() = %d, want 2", got)
+	}
+
+	if tok := plugClient.Subscribe("cmnd/ec_plug/POWER1", 1, func(_ mqtt.Client, msg mqtt.Message) {
+		if string(msg.Payload()) == "0" {
+			plugClient.Publish("stat/ec_plug/POWER1", 0, false, "OFF")
+		}
+	}); !tok.WaitTimeout(2*time.Second) || tok.Error() != nil {
+		t.Fatalf("plugClient subscribe cmd failed: %v", tok.Error())
+	}
+
+	if err := m.switchPlugVerified(context.Background(), "ec_plug", 1, false); err != nil {
+		t.Fatalf("switchPlugVerified through embedded broker failed: %v", err)
+	}
+	m.mu.RLock()
+	plug := m.plugs["ec_plug"]
+	m.mu.RUnlock()
+	if plug == nil || plug.relayState(1) != "OFF" {
+		t.Fatalf("plug relay state = %v, want OFF", plug)
+	}
+}
+
+func TestDirectHTTPTasmotaPollAndSwitch(t *testing.T) {
+	var mu sync.Mutex
+	relayOn := true
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cm" {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query()
+		if q.Get("user") != "admin" || q.Get("password") != "secretpw" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"WARNING":"Need user=<username>&password=<password>"}`))
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		switch q.Get("cmnd") {
+		case "Status 0":
+			pwr := "OFF"
+			watts := 0.0
+			if relayOn {
+				pwr = "ON"
+				watts = 42.3
+			}
+			_, _ = fmt.Fprintf(w, `{
+				"Status":{"DeviceName":"Entertainment Center","FriendlyName":["Entertainment Center"],"Topic":"Entertainment_Center"},
+				"StatusFWR":{"Hardware":"ESP8266EX"},
+				"StatusSNS":{"ENERGY":{"Power":%.1f,"Voltage":231.0,"Current":0.25}},
+				"StatusSTS":{"POWER":"%s"}
+			}`, watts, pwr)
+		case "POWER1 0":
+			relayOn = false
+			_, _ = w.Write([]byte(`{"POWER":"OFF"}`))
+		case "POWER1 1":
+			relayOn = true
+			_, _ = w.Write([]byte(`{"POWER":"ON"}`))
+		case "POWER2 1":
+			_, _ = w.Write([]byte(`{"Command":"Error","Input":"POWER2 1"}`))
+		default:
+			_, _ = w.Write([]byte(`{"Command":"Unknown"}`))
+		}
+	}))
+	defer srv.Close()
+
+	m := newModule(nil)
+	ctx := context.Background()
+
+	if err := m.saveConfig(ctx, "printer-1", DeviceConfig{
+		Mode:         "http",
+		HTTPHost:     srv.URL,
+		HTTPPassword: "secretpw",
+		RelayIndex:   1,
+	}); err != nil {
+		t.Fatalf("saveConfig failed: %v", err)
+	}
+
+	cfg, _ := m.getConfig(ctx, "printer-1")
+	if err := m.pollHTTPPlug(ctx, cfg); err != nil {
+		t.Fatalf("pollHTTPPlug failed: %v", err)
+	}
+
+	m.mu.RLock()
+	plug := m.plugs[cfg.plugKey()]
+	m.mu.RUnlock()
+	if plug == nil || plug.Online == nil || !*plug.Online {
+		t.Fatalf("expected HTTP plug online, got %+v", plug)
+	}
+	if plug.relayState(1) != "ON" {
+		t.Errorf("relayState(1) = %q, want ON", plug.relayState(1))
+	}
+	if plug.FriendlyName != "Entertainment Center" {
+		t.Errorf("FriendlyName = %q, want Entertainment Center", plug.FriendlyName)
+	}
+	if plug.PowerWatts == nil || *plug.PowerWatts != 42.3 {
+		t.Errorf("PowerWatts = %v, want 42.3", plug.PowerWatts)
+	}
+
+	if err := m.switchDevicePower(ctx, cfg, false); err != nil {
+		t.Fatalf("switchDevicePower(OFF) failed: %v", err)
+	}
+	mu.Lock()
+	stillOn := relayOn
+	mu.Unlock()
+	if stillOn {
+		t.Fatal("expected mock plug relay to be OFF after switchDevicePower(false)")
+	}
+
+	badCfg := cfg
+	badCfg.RelayIndex = 2
+	if err := m.switchDevicePower(ctx, badCfg, true); err == nil {
+		t.Fatal("expected error for non-existent relay 2, got nil")
+	}
+
+	// Updating config with KeepHTTPPassword=true and blank password must preserve stored secret.
+	if err := m.saveConfig(ctx, "printer-1", DeviceConfig{
+		Mode:              "http",
+		HTTPHost:          srv.URL,
+		KeepHTTPPassword:  true,
+		AutoOffAfterPrint: true,
+		RelayIndex:        1,
+	}); err != nil {
+		t.Fatalf("saveConfig keep password failed: %v", err)
+	}
+	updated, _ := m.getConfig(ctx, "printer-1")
+	if updated.HTTPPassword != "secretpw" {
+		t.Fatalf("expected preserved HTTPPassword, got %q", updated.HTTPPassword)
+	}
+	red := updated.redacted()
+	if red.HTTPPassword != "" || !red.HasHTTPPassword {
+		t.Fatalf("redacted() unexpected: %+v", red)
 	}
 }
