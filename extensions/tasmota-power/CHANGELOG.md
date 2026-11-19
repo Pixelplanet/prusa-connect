@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 - 2026-11-19
+
+- Remove the duplicate sampling interval badge above the power usage graph while keeping the explanatory caption below the chart.
+- Add full multi-platform release builds (`linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`, `windows_amd64`), MIT `LICENSE`, and Prusa shape/checksum verification in CI.
+
 ## 0.3.1 - 2026-11-19
 
 - Replace the inline Turn Off confirmation bar with Prusa Connect's native `AlertDialog` modal.

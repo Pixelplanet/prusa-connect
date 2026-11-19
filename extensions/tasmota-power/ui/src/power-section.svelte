@@ -409,16 +409,9 @@
         {@const pollSec = status.poll_interval_sec ?? 5}
         <div class="flex flex-col gap-1.5 rounded-sm border border-border bg-background/50 p-2.5">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="flex items-center gap-2">
-              <span class="text-[11px] font-medium text-muted-foreground">
-                {t('tasmota-power.section.graphTitle')}
-              </span>
-              <Badge variant="outline">
-                {t('tasmota-power.section.sampleIntervalBadge', {
-                  seconds: pollSec,
-                })}
-              </Badge>
-            </div>
+            <span class="text-[11px] font-medium text-muted-foreground">
+              {t('tasmota-power.section.graphTitle')}
+            </span>
             {#if chart}
               <span class="text-[11px] text-muted-foreground tabular-nums">
                 {t('tasmota-power.section.graphLivePeak', {
