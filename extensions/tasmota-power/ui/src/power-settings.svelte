@@ -32,6 +32,7 @@
   let hasSavedPassword = $state(false);
   let mqttClientId = $state('prusa-connect-tasmota');
   let cooldownSec = $state('120');
+  let confirmTurnOff = $state(true);
 
   let settingsMeta = $state<SettingsResponse | undefined>(undefined);
   let assignmentsData = $state<AssignmentsResponse | undefined>(undefined);
@@ -72,6 +73,7 @@
         Number.isFinite(parsedCooldown) && parsedCooldown >= 0
           ? parsedCooldown
           : 120,
+      confirm_turn_off: confirmTurnOff,
     };
   }
 
@@ -87,6 +89,7 @@
     hasSavedPassword = res.settings.has_password;
     mqttClientId = res.settings.mqtt_client_id || 'prusa-connect-tasmota';
     cooldownSec = String(res.settings.auto_off_cooldown_sec ?? 120);
+    confirmTurnOff = res.settings.confirm_turn_off ?? true;
   }
 
   function syncAssignmentDrafts(aRes: AssignmentsResponse) {
@@ -391,6 +394,23 @@
               {t('tasmota-power.settings.clientIdHint')}
             </p>
           </div>
+        </div>
+
+        <!-- Row 4: Turn-off confirmation toggle -->
+        <div class="flex items-start justify-between gap-4 rounded-sm border border-border bg-background/40 px-3 py-2.5">
+          <div class="flex flex-col gap-0.5">
+            <Label for="confirm-turn-off" variant="option">
+              {t('tasmota-power.settings.confirmTurnOffLabel')}
+            </Label>
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              {t('tasmota-power.settings.confirmTurnOffHint')}
+            </p>
+          </div>
+          <Switch
+            id="confirm-turn-off"
+            checked={confirmTurnOff}
+            onCheckedChange={(v: boolean) => (confirmTurnOff = v)}
+          />
         </div>
 
         <!-- Green / Red Test or Save Feedback Banner -->

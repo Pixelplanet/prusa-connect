@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 - 2026-11-19
+
+- Fix power usage graph aspect-ratio distortion by moving axis labels and the live endpoint dot to HTML and using `vector-effect="non-scaling-stroke"` with a `100 W` minimum Y-axis scale.
+- Add a confirmation step to the **Turn Off** button on the printer page, configurable in **Settings** (`confirm_turn_off`, enabled by default).
+
 ## 0.2.2 - 2026-11-18
 
 - Poll assigned Tasmota plugs every 5 seconds via `Status 8` for responsive energy telemetry.

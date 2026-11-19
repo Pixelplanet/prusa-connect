@@ -13,6 +13,7 @@ export interface TasmotaSettings {
   keep_password?: boolean;
   mqtt_client_id: string;
   auto_off_cooldown_sec: number;
+  confirm_turn_off: boolean;
 }
 
 export interface SettingsResponse {
@@ -91,6 +92,7 @@ export interface PowerStatus {
   auto_off_pending: boolean;
   auto_off_remaining_sec: number;
   default_cooldown_sec: number;
+  confirm_turn_off?: boolean;
   power_history?: PowerSample[];
   session_usage?: PowerSession;
   current_print_usage?: PrintPowerRecord;

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "description": "Tasmota MQTT smart plug control and monitoring per printer."
   },
   "paths": {
@@ -202,6 +202,7 @@
           "auto_off_pending": { "type": "boolean" },
           "auto_off_remaining_sec": { "type": "integer" },
           "default_cooldown_sec": { "type": "integer" },
+          "confirm_turn_off": { "type": "boolean" },
           "power_history": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/PowerSample" }
