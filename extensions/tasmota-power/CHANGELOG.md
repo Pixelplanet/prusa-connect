@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0 - 2026-11-19
+
+- Add multi-plug driver support inside a single unified extension sharing safety interlocks, auto-off cooldown, 30-minute power graph, and session/print energy tracking:
+  - **Shelly Gen1 (MQTT)** with `shellies/announce` discovery, online LWT, overpower detection, and per-relay power readings.
+  - **Shelly Gen2 / Plus / Pro (MQTT)** (`<prefix>/command/switch:<id>` + `<prefix>/status/switch:<id>` JSON telemetry).
+  - **Shelly Gen1 & Gen2+ (Direct HTTP)** using Gen2+ RPC (`/rpc/Switch.GetStatus`, `/rpc/Switch.Set`) with automatic fallback to Gen1 REST (`/status`, `/relay/<i>?turn=on|off`).
+  - **Zigbee2MQTT** (`<topic>/set`, `<topic>/get`, string & JSON availability, multi-endpoint `state_l<n>`, and power/voltage/current telemetry).
+  - **ESPHome (MQTT)** (`<prefix>/command`, `<prefix>/state`, `<node>/status`).
+  - **OpenBeken (MQTT)** (`<name>/<ch>/set`, `<name>/<ch>/get`, `<name>/connected`, power/voltage/current).
+  - **Generic MQTT** with custom command/state/availability/power topics, custom ON/OFF payloads, and optional JSON key extraction.
+  - **Home Assistant (REST)** optional integration (`ha_url` + Long-Lived Access Token, live `POST /ha/test` entity picker for switch + optional power sensor) for TP-Link Kasa/Tapo, Matter, Thread, Z-Wave, and Tuya plugs.
+- Split the extension's settings into three tabs: **Plugs** (every printer with its plug and live state), **Connections** (MQTT broker and Home Assistant, each tested and saved on its own) and **Automation** (the power-off rules, and each printer's auto-off choice and own delay).
+- Set up a plug in a guided dialog: pick the plug, pick how Connect reaches it, then fill in only the fields that plug needs. The dialog waits for the plug and says whether it answered. A plug and relay another printer already has is refused before saving.
+- Add a **Power** page in the sidebar with what the fleet draws now, which plugs are on, and buttons that switch each plug.
+- Add a **Printer power** dashboard card.
+- Rebuild the printer's **Power Control** section and the listing card line on the app's own components, in light and dark theme. A plug that does not answer is now said on the card instead of leaving the line empty.
+- Read every plug in one request (`GET /overview`), kept to the printers the caller may see, in place of one request per printer card.
+- Declare the built-in MQTT broker's port (`needs.listen`, TCP 1883). **The built-in broker now starts only on a port you approved**: after updating, approve it on the extension's Ports tab if you use the built-in broker. The port can be moved there.
+- Fix a start failure when `http_host` was written on the extension's host Settings tab. A value written there for `mqtt_host` or `ha_url` now fixes that value, and the Connections tab shows it as read-only.
+- Fix a new install starting with an auto-off delay of 0 seconds instead of the default 120.
+- Preserve full backwards compatibility with existing `mode: "mqtt"` and `mode: "http"` printer assignments.
+- Add unit tests in `drivers_test.go` covering all new plug drivers and legacy config compatibility, and in `host_test.go` covering the declared options, the granted port and the overview.
+- Hold the browser bundle to the app's own lint and formatting rules (`pnpm run check`).
+
 ## 0.4.1 - 2026-11-19
 
 - Hardwire the optional built-in MQTT 3.1.1 broker to TCP port 1883 and warn when an existing MQTT broker or missing Docker `-p 1883:1883` port mapping is detected.

@@ -2,15 +2,15 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.4.1",
-    "description": "Tasmota MQTT and Direct HTTP smart plug control and monitoring per printer."
+    "version": "0.5.0",
+    "description": "Multi-driver smart plug control and energy monitoring per printer (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant)."
   },
   "paths": {
     "/settings": {
       "get": {
         "operationId": "get-tasmota-settings",
-        "summary": "Get MQTT broker settings and live connection status",
-        "description": "Returns the structured external or built-in MQTT broker configuration (with password redacted), connection state, embedded broker status, and last error.",
+        "summary": "Get the connection settings and their live state",
+        "description": "Returns the MQTT broker and Home Assistant settings with secrets left out, whether each connection is up, the state of the built-in broker and whether its port is granted, and which values are pinned by the host's own settings.",
         "responses": {
           "200": {
             "description": "Current MQTT settings and broker status"
@@ -19,8 +19,8 @@
       },
       "put": {
         "operationId": "put-tasmota-settings",
-        "summary": "Save MQTT broker settings and reconnect",
-        "description": "Saves structured MQTT broker settings (including optional built-in MQTT broker toggle) to settings.json and restarts/reconnects MQTT.",
+        "summary": "Save the settings and reconnect",
+        "description": "Replaces the whole settings object in settings.json and reconnects the MQTT broker. A value pinned in the host's own settings is kept as pinned.",
         "responses": {
           "200": {
             "description": "Updated MQTT settings and broker status"
@@ -32,7 +32,7 @@
       "post": {
         "operationId": "test-broker-connection",
         "summary": "Test MQTT broker connectivity",
-        "description": "Tests connecting to the provided (or saved) external or built-in MQTT broker settings and returns whether the connection succeeded or the exact error.",
+        "description": "Tests connecting to the provided (or saved) external or built-in MQTT broker settings and returns whether the connection succeeded or the exact error. The built-in broker is tested on the port the operator granted.",
         "responses": {
           "200": {
             "description": "MQTT broker test result"
@@ -40,11 +40,23 @@
         }
       }
     },
+    "/ha/test": {
+      "post": {
+        "operationId": "test-ha-connection",
+        "summary": "Test Home Assistant REST connectivity and list switch/power entities",
+        "description": "Tests connecting to the provided (or saved) Home Assistant URL and Long-Lived Access Token via GET /api/ and returns discovered switch, input_boolean, and power sensor entities.",
+        "responses": {
+          "200": {
+            "description": "Home Assistant test result and entity list"
+          }
+        }
+      }
+    },
     "/discover": {
       "post": {
         "operationId": "discover-tasmota-plugs",
-        "summary": "Probe MQTT for online Tasmota plugs",
-        "description": "Publishes a status query to Tasmota's group topic (cmnd/tasmotas/Power) and returns all discovered Tasmota plugs.",
+        "summary": "Ask the MQTT broker which plugs are there",
+        "description": "Queries the broker for Tasmota and Shelly Gen1 plugs and returns every plug found.",
         "responses": {
           "200": {
             "description": "List of discovered Tasmota plugs"
@@ -55,8 +67,8 @@
     "/assignments": {
       "get": {
         "operationId": "get-plug-assignments",
-        "summary": "List all printer-to-Tasmota plug assignments and discovered plugs",
-        "description": "Returns all configured printer-to-Tasmota mappings, discovered Tasmota plugs, and MQTT broker status.",
+        "summary": "List every printer's plug and the plugs the broker found",
+        "description": "Returns each printer's saved plug, the plugs the broker found, the Home Assistant entities, and the state of both connections.",
         "responses": {
           "200": {
             "description": "All printer plug assignments and discovered plugs"
@@ -64,17 +76,38 @@
         }
       }
     },
+    "/overview": {
+      "get": {
+        "operationId": "get-power-overview",
+        "summary": "List every printer's plug and what it draws now",
+        "description": "Returns, for every printer the caller may see that has a plug or an auto-off choice, the saved plug with secrets left out, its live state and readings, and the energy since it was turned on. It reads memory only, so one request serves a whole list of printers.",
+        "responses": {
+          "200": {
+            "description": "Every visible printer's plug, and the state of both connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PowerOverview"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",
-        "summary": "Get Tasmota plug config, live power state, usage graph, and safety lock status for a printer",
-        "description": "Returns the printer's configured Tasmota MQTT topic, live relay/power telemetry, rolling power graph samples, session and per-print energy totals, active-print safety lock state, and auto-off countdown.",
+        "summary": "Get one printer's plug, its live state, its power graph and its safety lock",
+        "description": "Returns the printer's saved plug, live relay and power readings, rolling power graph samples, session and per-print energy totals, the active-print safety lock, and the auto-off countdown.",
         "parameters": [
           {
             "name": "device_id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -82,7 +115,9 @@
             "description": "Device power plug status and energy usage telemetry",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/PowerStatus" }
+                "schema": {
+                  "$ref": "#/components/schemas/PowerStatus"
+                }
               }
             }
           }
@@ -92,14 +127,16 @@
     "/devices/{device_id}/config": {
       "put": {
         "operationId": "put-device-power-config",
-        "summary": "Configure Tasmota MQTT or Direct HTTP plug and auto-off settings for a printer",
-        "description": "Persists the printer's plug connection mode (mqtt or http), Tasmota MQTT topic or HTTP IP/host and web password, relay index, auto-off-after-print flag, and optional cooldown duration.",
+        "summary": "Save one printer's plug and its auto-off choices",
+        "description": "Saves the driver, the plug's address (an MQTT topic, an IP address or host, a Home Assistant entity, or custom MQTT topics), the relay, the auto-off-after-print flag, and an optional delay of the printer's own. Answers 409 when another printer already has that plug and relay.",
         "parameters": [
           {
             "name": "device_id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -112,14 +149,16 @@
     "/devices/{device_id}/power": {
       "post": {
         "operationId": "post-device-power",
-        "summary": "Turn a printer's Tasmota plug ON, OFF, or TOGGLE",
-        "description": "Switches the printer's plug relay via MQTT or Direct HTTP Tasmota /cm command and verifies the resulting relay state. Refuses OFF or TOGGLE-to-OFF with 409 Conflict if the printer is actively printing or busy.",
+        "summary": "Turn a printer's plug on or off",
+        "description": "Switches the plug through its driver and verifies the resulting state. Refuses OFF, and a TOGGLE that would turn off, with 409 Conflict while the printer is printing or busy.",
         "parameters": [
           {
             "name": "device_id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -139,7 +178,9 @@
             "name": "device_id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -155,64 +196,200 @@
       "PowerSample": {
         "type": "object",
         "properties": {
-          "ts": { "type": "integer", "description": "Unix timestamp in seconds" },
-          "watts": { "type": "number", "description": "Instantaneous power draw in watts" }
+          "ts": {
+            "type": "integer",
+            "description": "Unix timestamp in seconds"
+          },
+          "watts": {
+            "type": "number",
+            "description": "Instantaneous power draw in watts"
+          }
         }
       },
       "PowerSession": {
         "type": "object",
         "properties": {
-          "active": { "type": "boolean" },
-          "started_at": { "type": "string", "format": "date-time" },
-          "ended_at": { "type": "string", "format": "date-time" },
-          "duration_sec": { "type": "integer" },
-          "energy_wh": { "type": "number" },
-          "avg_watts": { "type": "number" },
-          "peak_watts": { "type": "number" }
+          "active": {
+            "type": "boolean"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_sec": {
+            "type": "integer"
+          },
+          "energy_wh": {
+            "type": "number"
+          },
+          "avg_watts": {
+            "type": "number"
+          },
+          "peak_watts": {
+            "type": "number"
+          }
         }
       },
       "PrintPowerRecord": {
         "type": "object",
         "properties": {
-          "job_id": { "type": "string" },
-          "file_name": { "type": "string" },
-          "active": { "type": "boolean" },
-          "outcome": { "type": "string" },
-          "started_at": { "type": "string", "format": "date-time" },
-          "ended_at": { "type": "string", "format": "date-time" },
-          "duration_sec": { "type": "integer" },
-          "energy_wh": { "type": "number" },
-          "avg_watts": { "type": "number" },
-          "peak_watts": { "type": "number" }
+          "job_id": {
+            "type": "string"
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_sec": {
+            "type": "integer"
+          },
+          "energy_wh": {
+            "type": "number"
+          },
+          "avg_watts": {
+            "type": "number"
+          },
+          "peak_watts": {
+            "type": "number"
+          }
         }
       },
       "PowerStatus": {
         "type": "object",
         "properties": {
-          "device_id": { "type": "string" },
-          "mqtt_configured": { "type": "boolean" },
-          "mqtt_connected": { "type": "boolean" },
-          "mqtt_broker": { "type": "string" },
-          "mqtt_error": { "type": "string" },
-          "can_turn_off": { "type": "boolean" },
-          "lock_reason": { "type": "string" },
-          "printer_connected": { "type": "boolean" },
-          "printer_state": { "type": "string" },
-          "printer_moving": { "type": "boolean" },
-          "auto_off_pending": { "type": "boolean" },
-          "auto_off_remaining_sec": { "type": "integer" },
-          "default_cooldown_sec": { "type": "integer" },
-          "confirm_turn_off": { "type": "boolean" },
-          "poll_interval_sec": { "type": "integer" },
+          "device_id": {
+            "type": "string"
+          },
+          "mqtt_configured": {
+            "type": "boolean"
+          },
+          "mqtt_connected": {
+            "type": "boolean"
+          },
+          "mqtt_broker": {
+            "type": "string"
+          },
+          "mqtt_error": {
+            "type": "string"
+          },
+          "can_turn_off": {
+            "type": "boolean"
+          },
+          "lock_reason": {
+            "type": "string"
+          },
+          "printer_connected": {
+            "type": "boolean"
+          },
+          "printer_state": {
+            "type": "string"
+          },
+          "printer_moving": {
+            "type": "boolean"
+          },
+          "auto_off_pending": {
+            "type": "boolean"
+          },
+          "auto_off_remaining_sec": {
+            "type": "integer"
+          },
+          "default_cooldown_sec": {
+            "type": "integer"
+          },
+          "confirm_turn_off": {
+            "type": "boolean"
+          },
+          "poll_interval_sec": {
+            "type": "integer"
+          },
           "power_history": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/PowerSample" }
+            "items": {
+              "$ref": "#/components/schemas/PowerSample"
+            }
           },
-          "session_usage": { "$ref": "#/components/schemas/PowerSession" },
-          "current_print_usage": { "$ref": "#/components/schemas/PrintPowerRecord" },
+          "session_usage": {
+            "$ref": "#/components/schemas/PowerSession"
+          },
+          "current_print_usage": {
+            "$ref": "#/components/schemas/PrintPowerRecord"
+          },
           "print_history": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/PrintPowerRecord" }
+            "items": {
+              "$ref": "#/components/schemas/PrintPowerRecord"
+            }
+          }
+        }
+      },
+      "PowerOverviewEntry": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "config": {
+            "type": "object",
+            "description": "The saved plug, with secrets left out"
+          },
+          "plug": {
+            "type": "object",
+            "description": "The live state and readings of the plug, absent for a printer with no plug"
+          },
+          "session_usage": {
+            "$ref": "#/components/schemas/PowerSession"
+          },
+          "current_print_usage": {
+            "$ref": "#/components/schemas/PrintPowerRecord"
+          }
+        }
+      },
+      "PowerOverview": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PowerOverviewEntry"
+            }
+          },
+          "mqtt_configured": {
+            "type": "boolean"
+          },
+          "mqtt_connected": {
+            "type": "boolean"
+          },
+          "mqtt_error": {
+            "type": "string"
+          },
+          "ha_configured": {
+            "type": "boolean"
+          },
+          "default_cooldown_sec": {
+            "type": "integer"
+          },
+          "confirm_turn_off": {
+            "type": "boolean"
+          },
+          "poll_interval_sec": {
+            "type": "integer"
           }
         }
       }
