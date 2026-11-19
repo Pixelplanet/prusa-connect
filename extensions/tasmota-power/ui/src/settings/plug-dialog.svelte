@@ -213,6 +213,34 @@
   <!-- The dialog is drawn outside this module's slot, so its content names
        the module for the module's own utilities to reach it. -->
   <div data-module={OWN_MODULE} class="flex flex-col gap-4 p-1">
+    {#if step !== 'type' && kind !== undefined}
+      <div class="flex flex-col gap-1 text-sm" data-part="answers">
+        <div class="flex items-center justify-between gap-2">
+          <span>
+            {t('power.setup.answer', {
+              question: t('power.setup.step.type'),
+              answer: t(kind.name),
+            })}
+          </span>
+          <Button variant="link" onclick={() => (step = 'type')}>
+            {t('power.setup.changeAnswer')}
+          </Button>
+        </div>
+        {#if step === 'plug' && kind.routes.length > 1}
+          <div class="flex items-center justify-between gap-2">
+            <span>
+              {t('power.setup.answer', {
+                question: t('power.setup.step.route'),
+                answer: t(routeOf(draft.driver).label),
+              })}
+            </span>
+            <Button variant="link" onclick={() => (step = 'route')}>
+              {t('power.setup.changeAnswer')}
+            </Button>
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if step === 'type'}
       <p class="text-muted-foreground text-sm">
         {t('power.setup.type.question')}
