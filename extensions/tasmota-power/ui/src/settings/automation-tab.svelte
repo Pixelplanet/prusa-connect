@@ -121,6 +121,19 @@
     }
   };
 
+  /** Takes a printer's own delay away, so it follows the general wait again. */
+  const useGeneralWait = async (
+    deviceId: string,
+    config: DeviceConfig,
+  ): Promise<void> => {
+    await change(deviceId, () =>
+      power.saveConfig(
+        deviceId,
+        withAutoOff(config, { cooldown_sec: undefined }),
+      ),
+    );
+  };
+
   const saveOwnDelay = async (
     deviceId: string,
     config: DeviceConfig,
@@ -279,6 +292,23 @@
                           onclick={() => void saveOwnDelay(printer.id, config)}
                         >
                           {t('power.connections.save')}
+                        </Button>
+                      {:else if savedOwn(config) === ''}
+                        <span
+                          class="text-muted-foreground text-xs"
+                          data-part="general-wait"
+                        >
+                          {t('power.automation.printers.general')}
+                        </span>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyPrinter === printer.id}
+                          onclick={() =>
+                            void useGeneralWait(printer.id, config)}
+                        >
+                          {t('power.automation.printers.useGeneral')}
                         </Button>
                       {/if}
                     </div>

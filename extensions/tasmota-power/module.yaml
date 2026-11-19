@@ -3,7 +3,7 @@ title: Connect Power Control
 summary: Control and monitor smart plugs (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant) for printers via MQTT, Direct HTTP, or REST, with active-print power-off protection and auto-off after print.
 codeowner: Pixelplanet
 kind: sink
-version: 0.5.0
+version: 0.5.1
 license: MIT
 contract_major: 1
 openapi: openapi.json
@@ -22,35 +22,35 @@ needs:
   listen:
     - name: mqtt
       tcp: 1883
-      why: Smart plugs connect to the built-in MQTT broker here. It is used only while the built-in broker is switched on.
+      why: the built-in MQTT broker your smart plugs connect to. It is used only while that broker is switched on.
 
 options:
   - key: mqtt_host
     type: string
-    summary: Optional. Hostname or IP address of the MQTT broker. A value here fixes the broker host; leave it empty to set the broker on the Connections tab.
+    summary: Leave empty. The MQTT broker is set on the Connections tab. A host written here overrides it, for a server set up from a configuration file.
   - key: http_host
     type: string
-    summary: Optional. Hostname or IP address of a Tasmota or Shelly plug reached directly over HTTP. It is offered as the address when a plug is set up; each printer keeps its own on the Plugs tab.
+    summary: Leave empty. Each plug's address is set on the Plugs tab. A host written here is only suggested when a plug is set up.
   - key: ha_url
     type: url
-    summary: Optional. Home Assistant base URL, such as http://homeassistant.local:8123. A value here fixes the URL; leave it empty to set it on the Connections tab.
+    summary: Leave empty. Home Assistant is set on the Connections tab. A URL written here overrides it, for a server set up from a configuration file.
 
 egress:
   - option: mqtt_host
     ports: [1883, 8883]
     from: process
-    why: Connects to the operator's MQTT broker to monitor and switch Tasmota, Shelly, Zigbee2MQTT, ESPHome, OpenBeken, or Generic MQTT smart plugs
-    sends: Smart plug power commands and telemetry queries for assigned printer plugs
+    why: Switches and reads your smart plugs through the MQTT broker you set on the Connections tab.
+    sends: Power commands and state queries for the plugs you assigned to printers.
   - option: http_host
     ports: [80, 443]
     from: process
-    why: Polls and switches a Tasmota or Shelly smart plug directly over HTTP when no MQTT broker is used
-    sends: Tasmota /cm or Shelly Gen1/Gen2+ HTTP status queries and relay commands
+    why: Switches and reads a Tasmota or Shelly plug directly at the address you give that plug on the Plugs tab.
+    sends: Status queries and relay commands for that plug, with its password when you set one.
   - option: ha_url
     ports: [8123, 80, 443]
     from: process
-    why: Polls switch/power sensor states and calls homeassistant.turn_on/turn_off services when the Home Assistant driver is used
-    sends: Authenticated Home Assistant REST API requests for assigned printer switch entities
+    why: Switches and reads plugs through the Home Assistant server you set on the Connections tab.
+    sends: Your access token, state queries, and turn-on and turn-off calls for the entities you assigned to printers.
 
 platforms:
   - linux_amd64

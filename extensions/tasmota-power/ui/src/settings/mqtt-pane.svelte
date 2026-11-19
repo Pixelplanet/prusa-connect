@@ -46,7 +46,13 @@
   // The form starts from what is saved, and takes it again after each save.
   // svelte-ignore state_referenced_locally
   const start = saved.settings;
-  let builtin = $state(start.mqtt_builtin);
+  // Nothing saved yet: the built-in broker is offered first to a person who
+  // approved its port, and the other one to a person who did not.
+  const unset = !start.mqtt_builtin && start.mqtt_host === '';
+  // svelte-ignore state_referenced_locally
+  let builtin = $state(
+    start.mqtt_builtin || (unset && saved.mqtt_builtin_granted === true),
+  );
   let brokerHost = $state(start.mqtt_host);
   let port = $state(String(start.mqtt_port || PORT));
   let tls = $state(start.mqtt_tls);
@@ -226,6 +232,7 @@
             value="builtin"
             id={`${uid}-builtin`}
             class="mt-0.5"
+            disabled={!granted && !builtin}
           />
           <div class="flex min-w-0 flex-col gap-0.5">
             <Label for={`${uid}-builtin`} variant="option">
@@ -234,6 +241,17 @@
             <p class="text-muted-foreground text-xs">
               {t('power.connections.mqtt.builtinHint')}
             </p>
+            {#if !granted && !builtin}
+              <p
+                class="text-muted-foreground text-xs"
+                data-part="builtin-locked"
+              >
+                {t('power.connections.mqtt.locked')}
+                <LinkButton href={portsTabHref()}>
+                  {t('power.connections.mqtt.openPorts')}
+                </LinkButton>
+              </p>
+            {/if}
           </div>
         </div>
       </RadioGroup>
