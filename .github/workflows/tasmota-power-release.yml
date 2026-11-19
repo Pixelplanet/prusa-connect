@@ -52,6 +52,7 @@ jobs:
         run: |
           mkdir -p release/tasmota-power
           go -C extensions/tasmota-power mod tidy
+          go -C extensions/tasmota-power test -v ./...
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go -C extensions/tasmota-power build -o /tmp/tasmota-power_linux_amd64 .
           sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist /tmp/tasmota-power_linux_amd64 release/tasmota-power
           tar -czf tasmota-power-linux-amd64.tar.gz -C release tasmota-power

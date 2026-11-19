@@ -43,9 +43,15 @@ var (
 		fault.RetryAllowed,
 		fault.ShowDetail,
 	))
+	PlugRefused = fault.Register(faultDomain, "PLUG_REFUSED", http.StatusBadGateway, fault.Document(
+		"Tasmota plug did not confirm the requested power state",
+		"Verify that the plug is online and that PowerLock, PowerOnState 4, or an invalid relay number is not blocking control.",
+		fault.RetryAllowed,
+		fault.ShowDetail,
+	))
 	TopicInUse = fault.Register(faultDomain, "TOPIC_ALREADY_ASSIGNED", http.StatusConflict, fault.Document(
-		"Tasmota topic is already assigned to another printer",
-		"Unassign the plug from the other printer first, or pick a different Tasmota plug.",
+		"Tasmota topic and relay are already assigned to another printer",
+		"Unassign the plug/relay from the other printer first, or pick a different relay or plug.",
 		fault.RetryNever,
 		fault.ShowDetail,
 		"topic",

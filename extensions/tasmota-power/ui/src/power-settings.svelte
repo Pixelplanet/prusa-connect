@@ -38,6 +38,7 @@
   let assignmentsData = $state<AssignmentsResponse | undefined>(undefined);
   let manualOpen = $state<Record<string, boolean>>({});
   let selectedTopics = $state<Record<string, string>>({});
+  let selectedRelays = $state<Record<string, number>>({});
   let manualTopics = $state<Record<string, string>>({});
   let justSaved = $state<Record<string, boolean>>({});
 
@@ -95,13 +96,17 @@
   function syncAssignmentDrafts(aRes: AssignmentsResponse) {
     assignmentsData = aRes;
     const nextSelected: Record<string, string> = {};
+    const nextRelays: Record<string, number> = {};
     const nextManual: Record<string, string> = {};
     for (const dev of devices) {
-      const topic = aRes.assignments[dev.id]?.tasmota_topic ?? '';
+      const cfg = aRes.assignments[dev.id];
+      const topic = cfg?.tasmota_topic ?? '';
       nextSelected[dev.id] = topic;
+      nextRelays[dev.id] = cfg?.relay_index || 1;
       nextManual[dev.id] = topic;
     }
     selectedTopics = nextSelected;
+    selectedRelays = nextRelays;
     manualTopics = nextManual;
   }
 
@@ -194,11 +199,17 @@
 
   function ownerOfTopic(
     topic: string,
+    relayIndex: number,
     excludeDeviceId: string,
   ): string | undefined {
     if (!topic || !assignmentsData) return undefined;
+    const targetRelay = relayIndex || 1;
     for (const [devId, cfg] of Object.entries(assignmentsData.assignments)) {
-      if (devId !== excludeDeviceId && cfg.tasmota_topic === topic) {
+      if (
+        devId !== excludeDeviceId &&
+        cfg.tasmota_topic === topic &&
+        (cfg.relay_index || 1) === targetRelay
+      ) {
         const dev = fleet.device(devId);
         return dev?.name || devId;
       }
@@ -210,28 +221,74 @@
     return assignmentsData?.discovered_plugs?.find((p) => p.topic === topic);
   }
 
+  function plugHasFreeRelay(plug: PlugTelemetry, excludeDeviceId: string): boolean {
+    if (!plug.topic) return true;
+    const count = Math.max(1, plug.relay_count ?? 1);
+    for (let r = 1; r <= count; r++) {
+      if (!ownerOfTopic(plug.topic, r, excludeDeviceId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function firstFreeRelay(
+    plug: PlugTelemetry | undefined,
+    excludeDeviceId: string,
+  ): number {
+    if (!plug?.topic) return 1;
+    const count = Math.max(1, plug.relay_count ?? 1);
+    for (let r = 1; r <= count; r++) {
+      if (!ownerOfTopic(plug.topic, r, excludeDeviceId)) {
+        return r;
+      }
+    }
+    return 1;
+  }
+
+  function relayDisplayState(
+    plug: PlugTelemetry | undefined,
+    relayIndex: number,
+  ): string {
+    if (!plug) return 'UNKNOWN';
+    if (plug.online === false) return 'Offline';
+    return plug.relays?.[String(relayIndex)] ?? plug.power;
+  }
+
   function plugLabel(plug: PlugTelemetry, currentDeviceId: string): string {
     const topic = plug.topic ?? '';
     const base = plug.friendly_name ? `${plug.friendly_name} (${topic})` : topic;
+    const relaysCount = Math.max(1, plug.relay_count ?? 1);
+    const stateText =
+      plug.online === false
+        ? 'Offline'
+        : relaysCount > 1
+          ? `${relaysCount} relays`
+          : plug.power;
     const watts =
-      plug.power === 'ON' && plug.power_watts !== undefined
+      plug.online !== false && plug.power === 'ON' && plug.power_watts !== undefined
         ? ` · ${Math.round(plug.power_watts)} W`
         : '';
-    const owner = ownerOfTopic(topic, currentDeviceId);
-    const inUse = owner
-      ? ` ${t('tasmota-power.settings.inUseBy', { printer: owner })}`
-      : '';
-    return `${base} · ${plug.power}${watts}${inUse}`;
+    let inUse = '';
+    if (!plugHasFreeRelay(plug, currentDeviceId)) {
+      const owner = ownerOfTopic(topic, 1, currentDeviceId);
+      if (owner) {
+        inUse = ` ${t('tasmota-power.settings.inUseBy', { printer: owner })}`;
+      }
+    }
+    return `${base} · ${stateText}${watts}${inUse}`;
   }
 
-  async function assignTopic(deviceId: string, topic: string) {
+  async function assignTopic(deviceId: string, topic: string, relayIndex = 1) {
     savingDeviceId = deviceId;
     assignmentError = '';
     justSaved[deviceId] = false;
     try {
       const existing = assignmentsData?.assignments[deviceId];
+      const cleanTopic = topic.trim();
       await api.saveConfig(deviceId, {
-        tasmota_topic: topic.trim(),
+        tasmota_topic: cleanTopic,
+        relay_index: cleanTopic ? relayIndex : undefined,
         auto_off_after_print: existing?.auto_off_after_print ?? false,
         cooldown_sec: existing?.cooldown_sec,
       });
@@ -489,19 +546,35 @@
       {:else}
         <div class="flex flex-col gap-3">
           {#each devices as dev (dev.id)}
-            {@const currentTopic =
-              assignmentsData?.assignments[dev.id]?.tasmota_topic ?? ''}
+            {@const currentCfg = assignmentsData?.assignments[dev.id]}
+            {@const currentTopic = currentCfg?.tasmota_topic ?? ''}
+            {@const currentRelay = currentCfg?.relay_index || 1}
             {@const draftTopic = selectedTopics[dev.id] ?? currentTopic}
+            {@const draftRelay = selectedRelays[dev.id] || 1}
             {@const assignedPlug = currentTopic
               ? plugByTopic(currentTopic)
               : undefined}
-            {@const busy = savingDeviceId === dev.id}
             {@const hasDiscovered =
               (assignmentsData?.discovered_plugs?.length ?? 0) > 0}
             {@const showManual = manualOpen[dev.id] || !hasDiscovered}
+            {@const draftPlug = showManual
+              ? plugByTopic((manualTopics[dev.id] ?? '').trim())
+              : plugByTopic(draftTopic)}
+            {@const relayCount = Math.max(
+              showManual ? 4 : 1,
+              draftPlug?.relay_count ?? 1,
+              draftRelay,
+            )}
+            {@const showRelaySelect =
+              (showManual && (manualTopics[dev.id] ?? '').trim() !== '') ||
+              (draftTopic !== '' && (draftPlug?.relay_count ?? 1) > 1) ||
+              currentRelay > 1}
+            {@const busy = savingDeviceId === dev.id}
             {@const isDirty = showManual
-              ? (manualTopics[dev.id] ?? currentTopic).trim() !== currentTopic
-              : draftTopic !== currentTopic}
+              ? (manualTopics[dev.id] ?? currentTopic).trim() !== currentTopic ||
+                (currentTopic !== '' && draftRelay !== currentRelay)
+              : draftTopic !== currentTopic ||
+                (draftTopic !== '' && draftRelay !== currentRelay)}
 
             <div class="flex flex-col gap-3 rounded-sm border border-border bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div class="flex flex-col gap-1 min-w-0">
@@ -511,17 +584,28 @@
                   </span>
                   <Badge variant="outline">{dev.model ?? 'Printer'}</Badge>
                   {#if currentTopic}
+                    {@const curRelayState = relayDisplayState(
+                      assignedPlug,
+                      currentRelay,
+                    )}
                     <Badge
-                      variant={assignedPlug?.power === 'ON'
-                        ? 'success'
-                        : 'secondary'}
+                      variant={assignedPlug?.online === false
+                        ? 'destructive'
+                        : curRelayState === 'ON'
+                          ? 'success'
+                          : 'secondary'}
                     >
                       {assignedPlug?.friendly_name
                         ? `${assignedPlug.friendly_name} (${currentTopic})`
                         : currentTopic}
+                      {#if currentRelay > 1 || (assignedPlug?.relay_count ?? 1) > 1}
+                        · {t('tasmota-power.section.relayBadge', {
+                          relay: currentRelay,
+                        })}
+                      {/if}
                       {#if assignedPlug}
-                        · {assignedPlug.power}
-                        {#if assignedPlug.power === 'ON' && assignedPlug.power_watts !== undefined}
+                        · {curRelayState}
+                        {#if assignedPlug.online !== false && curRelayState === 'ON' && assignedPlug.power_watts !== undefined}
                           · {Math.round(assignedPlug.power_watts)} W
                         {/if}
                       {/if}
@@ -546,9 +630,18 @@
                     value={draftTopic}
                     disabled={busy}
                     onchange={(e) => {
-                      selectedTopics[dev.id] = (
+                      const nextTopic = (
                         e.currentTarget as HTMLSelectElement
                       ).value;
+                      selectedTopics[dev.id] = nextTopic;
+                      if (nextTopic === currentTopic) {
+                        selectedRelays[dev.id] = currentRelay;
+                      } else {
+                        selectedRelays[dev.id] = firstFreeRelay(
+                          plugByTopic(nextTopic),
+                          dev.id,
+                        );
+                      }
                     }}
                   >
                     <option value="">
@@ -556,9 +649,8 @@
                     </option>
                     {#each assignmentsData?.discovered_plugs ?? [] as plug (plug.topic)}
                       {@const topic = plug.topic ?? ''}
-                      {@const usedByOther =
-                        ownerOfTopic(topic, dev.id) !== undefined}
-                      <option value={topic} disabled={usedByOther}>
+                      {@const fullyUsed = !plugHasFreeRelay(plug, dev.id)}
+                      <option value={topic} disabled={fullyUsed}>
                         {plugLabel(plug, dev.id)}
                       </option>
                     {/each}
@@ -580,6 +672,35 @@
                   />
                 {/if}
 
+                {#if showRelaySelect}
+                  {@const activeTopic = showManual
+                    ? (manualTopics[dev.id] ?? '').trim()
+                    : draftTopic}
+                  <select
+                    class="h-8 rounded-sm border border-input bg-background px-2 text-xs"
+                    value={String(draftRelay)}
+                    disabled={busy}
+                    onchange={(e) => {
+                      selectedRelays[dev.id] = Number.parseInt(
+                        (e.currentTarget as HTMLSelectElement).value,
+                        10,
+                      );
+                    }}
+                  >
+                    {#each Array.from({ length: relayCount }, (_, i) => i + 1) as rNum (rNum)}
+                      {@const rOwner = ownerOfTopic(activeTopic, rNum, dev.id)}
+                      {@const rName = draftPlug?.relay_names?.[rNum - 1]}
+                      <option value={String(rNum)} disabled={Boolean(rOwner)}>
+                        {t('tasmota-power.settings.relayOption', { relay: rNum })}
+                        {rName && rName !== draftPlug?.friendly_name ? ` (${rName})` : ''}
+                        {rOwner
+                          ? ` ${t('tasmota-power.settings.inUseBy', { printer: rOwner })}`
+                          : ''}
+                      </option>
+                    {/each}
+                  </select>
+                {/if}
+
                 <Button
                   type="button"
                   size="sm"
@@ -591,6 +712,7 @@
                       showManual
                         ? (manualTopics[dev.id] ?? '')
                         : draftTopic,
+                      draftRelay,
                     )}
                 >
                   {t('tasmota-power.settings.saveTopic')}

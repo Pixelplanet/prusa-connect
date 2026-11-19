@@ -7,7 +7,10 @@
   "tasmota-power.section.brokerOfflineReason": "MQTT broker disconnected: {reason}",
   "tasmota-power.section.plugOn": "ON",
   "tasmota-power.section.plugOff": "OFF",
+  "tasmota-power.section.plugOffline": "Offline",
+  "tasmota-power.section.plugOfflineHint": "Smart plug is offline on MQTT (LWT Offline)",
   "tasmota-power.section.plugUnknown": "Unknown",
+  "tasmota-power.section.relayBadge": "Relay {relay}",
   "tasmota-power.section.turnOn": "Turn On",
   "tasmota-power.section.turnOff": "Turn Off",
   "tasmota-power.section.confirmOffPrompt": "Cut power?",
@@ -77,5 +80,6 @@
   "tasmota-power.settings.assignedSaved": "Saved",
   "tasmota-power.settings.noPlugAssigned": "No plug assigned",
   "tasmota-power.settings.confirmTurnOffLabel": "Confirm before turning power off",
-  "tasmota-power.settings.confirmTurnOffHint": "Ask for confirmation when clicking Turn Off on a printer. Disable to cut power immediately with a single click."
+  "tasmota-power.settings.confirmTurnOffHint": "Ask for confirmation when clicking Turn Off on a printer. Disable to cut power immediately with a single click.",
+  "tasmota-power.settings.relayOption": "Relay {relay}"
 }
