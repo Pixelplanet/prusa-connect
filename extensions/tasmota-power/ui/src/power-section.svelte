@@ -1,25 +1,56 @@
+<!--
+  The Power Control section of a printer's page: what the plug is doing, the
+  buttons that switch it, the choice to cut the power after a print, and what
+  the printer drew.
+
+  A printer with no plug, a plug whose connection is missing and a plug that
+  does not answer are each said in their own words, with a link to where a
+  person fixes it.
+-->
 <script lang="ts">
-  import { onMount } from 'svelte';
   import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
+    Alert,
+    AlertDescription,
+    AlertTitle,
     Badge,
-    Button,
     Card,
     CardContent,
+    DataRow,
     Label,
+    RowList,
+    Skeleton,
+    StatusCard,
     Switch,
   } from '@prusa/connect-ui/primitives';
+  import { onMount } from 'svelte';
 
-  import { createApi, type PowerSample, type PowerStatus } from './api';
+  import {
+    driverDisplayTarget,
+    effectiveDriver,
+    isDeviceConfigured,
+    type PowerStatus,
+    type PrintPowerRecord,
+    readingOf,
+    relayIndexOf,
+    textOr,
+  } from './api';
+  import { kindOf, transportOf } from './drivers';
+  import FaultNote from './fault-note.svelte';
+  import {
+    formatAmps,
+    formatEnergy,
+    formatSpan,
+    formatVolts,
+    formatWatts,
+  } from './format';
   import { heldHost } from './host';
-  import { OWN_MODULE } from './own-module';
+  import LinkButton from './link-button.svelte';
+  import { settingsTabHref } from './links';
+  import PlugBadge from './plug-badge.svelte';
+  import { plugStateOf } from './plug-state';
+  import PowerButtons from './power-buttons.svelte';
+  import PowerChart from './power-chart.svelte';
+  import { powerFor } from './power.svelte';
 
   interface Props {
     deviceId: string;
@@ -27,594 +58,322 @@
 
   let { deviceId }: Props = $props();
 
+  /** How often this printer's readings are read while its page is open. */
+  const REFRESH_MS = 5000;
+  /** How many finished prints the section lists. */
+  const RECENT_PRINTS = 5;
+
   const host = heldHost();
-  const api = createApi(host);
   const t = host.t;
+  const power = powerFor(host);
+  const uid = $props.id();
 
-  let status = $state<PowerStatus | undefined>(undefined);
+  let status = $state.raw<PowerStatus | undefined>(undefined);
+  let readFault = $state.raw<unknown>(undefined);
+  let fault = $state.raw<unknown>(undefined);
   let busy = $state(false);
-  let errorMsg = $state('');
-  let confirmingOff = $state(false);
 
-  const isHttpPlug = $derived(
-    Boolean(
-      status &&
-        (status.config.mode === 'http' ||
-          (status.config.http_host && !status.config.tasmota_topic)),
-    ),
-  );
-  const isAssigned = $derived(
-    Boolean(
-      status &&
-        (isHttpPlug ? status.config.http_host : status.config.tasmota_topic),
-    ),
-  );
-  const plugTarget = $derived(
-    status
-      ? isHttpPlug
-        ? (status.config.http_host ?? '')
-        : status.config.tasmota_topic
-      : '',
+  const printer = $derived(textOr(host.fleet.device(deviceId)?.name, deviceId));
+  const config = $derived(status?.config);
+  const plug = $derived(status?.plug);
+  const driver = $derived(effectiveDriver(config));
+  const transport = $derived(transportOf(driver));
+  const plugState = $derived(plugStateOf(config, plug));
+
+  /** Why the plug cannot be used at all, or undefined when it can. */
+  const blocked = $derived.by(
+    (): 'mqttUnset' | 'mqttDown' | 'haUnset' | undefined => {
+      if (status === undefined) return undefined;
+      if (transport === 'mqtt' && !status.mqtt_configured) return 'mqttUnset';
+      if (transport === 'mqtt' && !status.mqtt_connected) return 'mqttDown';
+      if (transport === 'ha' && status.ha_configured === false)
+        return 'haUnset';
+
+      return undefined;
+    },
   );
 
-  function requestTurnOff() {
-    if (status?.confirm_turn_off === false) {
-      void handlePower('off');
-      return;
-    }
-    confirmingOff = true;
-  }
+  /** Which plug this is, in one line: its name, its kind and its relay. */
+  const plugLine = $derived.by((): string => {
+    if (driver === '') return '';
+    const address = driverDisplayTarget(config);
+    const name =
+      plug?.friendly_name !== undefined &&
+      plug.friendly_name !== '' &&
+      plug.friendly_name !== address
+        ? t('power.setup.plug.named', {
+            name: plug.friendly_name,
+            topic: address,
+          })
+        : address;
+    const params = { plug: name, type: t(kindOf(driver).name) };
+    const relay = relayIndexOf(config);
 
-  function formatEnergy(wh: number): string {
-    if (wh >= 1000) {
-      return `${(wh / 1000).toFixed(2)} kWh`;
-    }
-    return `${wh.toFixed(1)} Wh`;
-  }
+    return relay > 1 || (plug?.relay_count ?? 1) > 1
+      ? t('power.section.plugRelay', { ...params, relay: String(relay) })
+      : t('power.section.plug', params);
+  });
 
-  function formatDuration(totalSec: number): string {
-    const s = Math.max(0, Math.floor(totalSec));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const rem = s % 60;
-    if (h > 0) return `${h}h ${m}m`;
-    if (m > 0) return `${m}m ${rem}s`;
-    return `${rem}s`;
-  }
+  const reading = $derived.by((): string => {
+    const watts = readingOf(plug?.power_watts);
+    const volts = readingOf(plug?.voltage);
+    const amps = readingOf(plug?.current_amps);
+    if (plugState !== 'on' || watts === undefined) return '';
+    if (volts === undefined || amps === undefined) return formatWatts(watts);
 
-  interface ChartGeometry {
-    linePoints: string;
-    areaPoints: string;
-    maxWatts: number;
-    peakWatts: number;
-    currentWatts: number;
-    spanLabel: string;
-    midSpanLabel: string;
-    lastXPercent: number;
-    lastYPercent: number;
-  }
-
-  function buildChart(samples: PowerSample[] | undefined): ChartGeometry | undefined {
-    if (!samples || samples.length === 0) return undefined;
-    const width = 1000;
-    const height = 100;
-    const padTop = 6;
-    const padBottom = 6;
-    const plotH = height - padTop - padBottom;
-
-    let rawPeak = 0;
-    for (const sample of samples) {
-      if (sample.watts > rawPeak) rawPeak = sample.watts;
-    }
-    const maxWatts = Math.max(
-      100,
-      Math.ceil(Math.max(rawPeak * 1.15, 10) / 50) * 50,
-    );
-    const bottomY = padTop + plotH;
-
-    const coords = samples.map((sample, idx) => {
-      const ratio = samples.length === 1 ? 1 : idx / (samples.length - 1);
-      const x = ratio * width;
-      const clamped = Math.max(0, Math.min(maxWatts, sample.watts));
-      const y = bottomY - (clamped / maxWatts) * plotH;
-      return { x, y };
+    return t('power.section.reading', {
+      watts: formatWatts(watts),
+      volts: formatVolts(volts),
+      amps: formatAmps(amps),
     });
+  });
 
-    const first = coords[0];
-    const last = coords[coords.length - 1];
-    const firstSample = samples[0];
-    const lastSample = samples[samples.length - 1];
-    if (!first || !last || !firstSample || !lastSample) return undefined;
-    const polyPts =
-      samples.length === 1
-        ? [
-            { x: 0, y: last.y },
-            { x: width, y: last.y },
-          ]
-        : coords;
-
-    const linePoints = polyPts
-      .map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`)
-      .join(' ');
-    const startX = samples.length === 1 ? 0 : first.x;
-    const areaPoints = `${startX.toFixed(1)},${bottomY.toFixed(1)} ${linePoints} ${last.x.toFixed(1)},${bottomY.toFixed(1)}`;
-
-    const spanSec = Math.max(0, lastSample.ts - firstSample.ts);
-    const spanLabel =
-      spanSec >= 60 ? `-${Math.round(spanSec / 60)}m` : `-${spanSec}s`;
-    const midSpanLabel =
-      spanSec >= 120 ? `-${Math.round(spanSec / 120)}m` : '';
-
-    return {
-      linePoints,
-      areaPoints,
-      maxWatts,
-      peakWatts: rawPeak,
-      currentWatts: lastSample.watts,
-      spanLabel,
-      midSpanLabel,
-      lastXPercent: (last.x / width) * 100,
-      lastYPercent: (last.y / height) * 100,
-    };
-  }
-
-  let chart = $derived(buildChart(status?.power_history));
-  let printCardRecord = $derived(
+  const samples = $derived(status?.power_history ?? []);
+  const peak = $derived(
+    samples.reduce((most, sample) => Math.max(most, sample.watts), 0),
+  );
+  const latest = $derived(samples[samples.length - 1]);
+  const session = $derived(status?.session_usage);
+  const print = $derived(
     status?.current_print_usage ?? status?.print_history?.[0],
   );
+  const recent = $derived(
+    (status?.print_history ?? []).slice(0, RECENT_PRINTS),
+  );
 
-  async function refresh() {
+  const usageOf = (record: {
+    duration_sec: number;
+    avg_watts: number;
+    peak_watts: number;
+  }): string =>
+    t('power.section.usage', {
+      span: formatSpan(record.duration_sec),
+      average: formatWatts(record.avg_watts),
+      peak: formatWatts(record.peak_watts),
+    });
+
+  const printKey = (record: PrintPowerRecord): string =>
+    `${record.started_at} ${record.file_name}`;
+
+  const refresh = async (): Promise<void> => {
     try {
-      status = await api.getStatus(deviceId);
-      errorMsg = '';
-    } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
+      status = await power.api.getStatus(deviceId);
+      readFault = undefined;
+    } catch (thrown) {
+      readFault = thrown;
     }
-  }
+  };
 
   onMount(() => {
     void refresh();
     const timer = setInterval(() => {
       void refresh();
-    }, 5000);
-    return () => clearInterval(timer);
+    }, REFRESH_MS);
+
+    return () => {
+      clearInterval(timer);
+    };
   });
 
-  async function handlePower(action: 'on' | 'off') {
-    confirmingOff = false;
+  const setAutoOff = async (enabled: boolean): Promise<void> => {
     busy = true;
-    errorMsg = '';
+    fault = undefined;
     try {
-      status = await api.sendPower(deviceId, action);
-    } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
+      status = await power.setAutoOff(deviceId, enabled);
+    } catch (thrown) {
+      fault = thrown;
     } finally {
       busy = false;
     }
-  }
-
-  async function handleAutoOff(enabled: boolean) {
-    busy = true;
-    errorMsg = '';
-    try {
-      status = await api.setAutoOff(deviceId, enabled);
-    } catch (err) {
-      errorMsg = err instanceof Error ? err.message : String(err);
-    } finally {
-      busy = false;
-    }
-  }
+  };
 </script>
 
-{#if status}
-  <Card density="compact">
-    <CardContent class="flex flex-col gap-3">
-      {#if !isAssigned}
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-xs text-muted-foreground">
-            {t('tasmota-power.section.notAssigned')}
-          </p>
-          <a
-            href="/settings/extensions"
-            class="text-xs font-medium text-primary hover:underline shrink-0"
-          >
-            {t('tasmota-power.section.configureLink')}
-          </a>
-        </div>
-      {:else if !isHttpPlug && !status.mqtt_configured}
-        <p class="text-xs text-muted-foreground">
-          {t('tasmota-power.section.brokerUnconfigured')}
-        </p>
-      {:else if !isHttpPlug && !status.mqtt_connected}
-        <p class="text-xs text-destructive">
-          {#if status.mqtt_error}
-            {t('tasmota-power.section.brokerOfflineReason', {
-              reason: status.mqtt_error,
-            })}
-          {:else}
-            {t('tasmota-power.section.brokerOffline')}
-          {/if}
-        </p>
+<Card density="compact" data-part="power-section">
+  <CardContent class="flex flex-col gap-4">
+    {#if status === undefined}
+      {#if readFault === undefined}
+        <Skeleton
+          class="h-16"
+          role="status"
+          aria-label={t('power.section.loading')}
+        />
       {:else}
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="flex items-center gap-2">
-            {#if status.plug?.online === false}
-              <Badge variant="destructive">
-                {t('tasmota-power.section.plugOffline')}
-              </Badge>
-            {:else if status.plug?.power === 'ON'}
-              <Badge variant="success">
-                {t('tasmota-power.section.plugOn')}
-              </Badge>
-            {:else if status.plug?.power === 'OFF'}
-              <Badge variant="secondary">
-                {t('tasmota-power.section.plugOff')}
-              </Badge>
-            {:else}
-              <Badge variant="outline">
-                {t('tasmota-power.section.plugUnknown')}
-              </Badge>
-            {/if}
-
-            <span class="text-xs text-muted-foreground">
-              {status.plug?.friendly_name
-                ? `${status.plug.friendly_name} (${plugTarget})`
-                : plugTarget}
-              {#if isHttpPlug}
-                · {t('tasmota-power.settings.httpBadge')}
-              {/if}
-              {#if (status.config.relay_index ?? 1) > 1 || (status.plug?.relay_count ?? 1) > 1}
-                · {t('tasmota-power.section.relayBadge', {
-                  relay: status.config.relay_index ?? 1,
-                })}
-              {/if}
+        <FaultNote fault={readFault} />
+      {/if}
+    {:else if !isDeviceConfigured(config)}
+      <div
+        class="flex flex-wrap items-center justify-between gap-3"
+        data-part="no-plug"
+      >
+        <p class="text-muted-foreground text-sm">{t('power.section.noPlug')}</p>
+        <LinkButton
+          href={settingsTabHref('plugs')}
+          variant="secondary"
+          size="sm"
+        >
+          {t('power.section.setUp')}
+        </LinkButton>
+      </div>
+    {:else if blocked !== undefined}
+      <Alert
+        variant={blocked === 'mqttDown' ? 'destructive' : 'warning'}
+        data-part="blocked"
+        data-reason={blocked}
+      >
+        <AlertTitle>{t(`power.section.blocked.${blocked}`)}</AlertTitle>
+        <AlertDescription>
+          {#if blocked === 'mqttDown' && status.mqtt_error}
+            {status.mqtt_error}
+          {/if}
+          <LinkButton href={settingsTabHref('connections')}>
+            {t('power.plugs.openConnections')}
+          </LinkButton>
+        </AlertDescription>
+      </Alert>
+    {:else}
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <PlugBadge {plugState} />
+          <span class="text-muted-foreground truncate text-sm">{plugLine}</span>
+          {#if reading !== ''}
+            <span class="text-sm tabular-nums" data-part="reading">
+              {reading}
             </span>
-
-            {#if status.plug?.online === false}
-              <span class="text-xs text-destructive">
-                {#if isHttpPlug}
-                  {status.plug?.last_error
-                    ? t('tasmota-power.section.plugOfflineHintHttp', {
-                        reason: status.plug.last_error,
-                      })
-                    : t('tasmota-power.section.plugOfflineHintHttpGeneric')}
-                {:else}
-                  {t('tasmota-power.section.plugOfflineHint')}
-                {/if}
-              </span>
-            {:else if status.plug?.power === 'ON' && status.plug.power_watts !== undefined}
-              <span class="text-xs text-muted-foreground tabular-nums">
-                ·
-                {#if status.plug.voltage !== undefined && status.plug.current_amps !== undefined}
-                  {t('tasmota-power.section.telemetry', {
-                    watts: Math.round(status.plug.power_watts),
-                    voltage: Math.round(status.plug.voltage),
-                    amps: status.plug.current_amps.toFixed(2),
-                  })}
-                {:else}
-                  {t('tasmota-power.section.watts', {
-                    watts: Math.round(status.plug.power_watts),
-                  })}
-                {/if}
-              </span>
-            {/if}
-          </div>
-
-          <div class="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="default"
-              disabled={busy || status.plug?.online === false || status.plug?.power === 'ON'}
-              onclick={() => void handlePower('on')}
-            >
-              {t('tasmota-power.section.turnOn')}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={busy || status.plug?.online === false || !status.can_turn_off || status.plug?.power === 'OFF'}
-              onclick={requestTurnOff}
-            >
-              {t('tasmota-power.section.turnOff')}
-            </Button>
-          </div>
-        </div>
-
-        <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-border">
-          <div class="flex items-center gap-2">
-            <Switch
-              id="tasmota-auto-off-{deviceId}"
-              checked={status.config.auto_off_after_print}
-              disabled={busy}
-              onCheckedChange={(v: boolean) => void handleAutoOff(v)}
-            />
-            <Label for="tasmota-auto-off-{deviceId}" variant="option">
-              {t('tasmota-power.section.autoOffLabel')}
-            </Label>
-          </div>
-
-          <div class="flex items-center gap-2">
-            {#if status.auto_off_pending}
-              {#if status.printer_moving}
-                <Badge variant="warning">
-                  {t('tasmota-power.section.autoOffMoving')}
-                </Badge>
-              {:else}
-                <Badge variant="secondary">
-                  {t('tasmota-power.section.autoOffPending', {
-                    seconds: status.auto_off_remaining_sec,
-                  })}
-                </Badge>
-              {/if}
-            {/if}
-            {#if !status.can_turn_off && status.lock_reason}
-              <span class="text-xs text-muted-foreground">
-                {status.lock_reason}
-              </span>
-            {/if}
-          </div>
-        </div>
-
-        <!-- Session & Print File Energy Summary -->
-        <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <!-- While Turned On Session -->
-          <div class="flex flex-col justify-between gap-1.5 rounded-sm border border-border bg-background/50 p-2.5">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-[11px] font-medium text-muted-foreground">
-                {status.session_usage?.active
-                  ? t('tasmota-power.section.sessionActiveTitle')
-                  : t('tasmota-power.section.sessionLastTitle')}
-              </span>
-              {#if status.session_usage}
-                <Badge variant={status.session_usage.active ? 'success' : 'secondary'}>
-                  {status.session_usage.active
-                    ? t('tasmota-power.section.onBadge')
-                    : t('tasmota-power.section.offBadge')}
-                </Badge>
-              {/if}
-            </div>
-            {#if status.session_usage}
-              <div class="flex items-baseline justify-between gap-2">
-                <span class="text-sm font-semibold text-foreground tabular-nums">
-                  {formatEnergy(status.session_usage.energy_wh)}
-                </span>
-                <span class="text-xs text-muted-foreground tabular-nums">
-                  {formatDuration(status.session_usage.duration_sec)}
-                </span>
-              </div>
-              <span class="text-[11px] text-muted-foreground tabular-nums">
-                {t('tasmota-power.section.avgPeak', {
-                  avg: Math.round(status.session_usage.avg_watts),
-                  peak: Math.round(status.session_usage.peak_watts),
-                })}
-              </span>
-            {:else}
-              <span class="text-xs text-muted-foreground">
-                {t('tasmota-power.section.sessionNone')}
-              </span>
-            {/if}
-          </div>
-
-          <!-- Per-Print File Energy -->
-          <div class="flex flex-col justify-between gap-1.5 rounded-sm border border-border bg-background/50 p-2.5 min-w-0">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-[11px] font-medium text-muted-foreground">
-                {printCardRecord?.active
-                  ? t('tasmota-power.section.printActiveTitle')
-                  : t('tasmota-power.section.printLastTitle')}
-              </span>
-              {#if printCardRecord}
-                <Badge variant={printCardRecord.active ? 'info' : 'secondary'}>
-                  {printCardRecord.active
-                    ? t('tasmota-power.section.printingBadge')
-                    : printCardRecord.outcome || t('tasmota-power.section.offBadge')}
-                </Badge>
-              {/if}
-            </div>
-            {#if printCardRecord}
-              <span
-                class="truncate text-xs font-medium text-foreground"
-                title={printCardRecord.file_name}
-              >
-                {printCardRecord.file_name}
-              </span>
-              <div class="flex items-baseline justify-between gap-2">
-                <span class="text-sm font-semibold text-foreground tabular-nums">
-                  {formatEnergy(printCardRecord.energy_wh)}
-                </span>
-                <span class="text-xs text-muted-foreground tabular-nums">
-                  {formatDuration(printCardRecord.duration_sec)}
-                </span>
-              </div>
-              <span class="text-[11px] text-muted-foreground tabular-nums">
-                {t('tasmota-power.section.avgPeak', {
-                  avg: Math.round(printCardRecord.avg_watts),
-                  peak: Math.round(printCardRecord.peak_watts),
-                })}
-              </span>
-            {:else}
-              <span class="text-xs text-muted-foreground">
-                {t('tasmota-power.section.noPrintYet')}
-              </span>
-            {/if}
-          </div>
-        </div>
-
-        <!-- Live Power Graph -->
-        {@const pollSec = status.poll_interval_sec ?? 5}
-        <div class="flex flex-col gap-1.5 rounded-sm border border-border bg-background/50 p-2.5">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-[11px] font-medium text-muted-foreground">
-              {t('tasmota-power.section.graphTitle')}
-            </span>
-            {#if chart}
-              <span class="text-[11px] text-muted-foreground tabular-nums">
-                {t('tasmota-power.section.graphLivePeak', {
-                  watts: Math.round(chart.currentWatts),
-                  peak: Math.round(chart.peakWatts),
-                })}
-              </span>
-            {/if}
-          </div>
-
-          {#if chart}
-            <div class="flex items-stretch gap-2">
-              <div class="flex w-11 shrink-0 flex-col justify-between pb-4 pt-0.5 text-right text-[10px] text-muted-foreground tabular-nums select-none">
-                <span>{chart.maxWatts} W</span>
-                <span>{Math.round(chart.maxWatts / 2)} W</span>
-                <span>0 W</span>
-              </div>
-              <div class="flex min-w-0 flex-1 flex-col gap-1">
-                <div class="relative h-24 w-full">
-                  <svg
-                    viewBox="0 0 1000 100"
-                    class="h-full w-full overflow-visible"
-                    preserveAspectRatio="none"
-                  >
-                    <defs>
-                      <linearGradient id="tasmota-pwr-grad-{deviceId}" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.32" />
-                        <stop offset="100%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.02" />
-                      </linearGradient>
-                    </defs>
-
-                    <line
-                      x1="0"
-                      y1="6"
-                      x2="1000"
-                      y2="6"
-                      stroke="currentColor"
-                      stroke-opacity="0.12"
-                      stroke-dasharray="4 4"
-                      vector-effect="non-scaling-stroke"
-                    />
-                    <line
-                      x1="0"
-                      y1="50"
-                      x2="1000"
-                      y2="50"
-                      stroke="currentColor"
-                      stroke-opacity="0.12"
-                      stroke-dasharray="4 4"
-                      vector-effect="non-scaling-stroke"
-                    />
-                    <line
-                      x1="0"
-                      y1="94"
-                      x2="1000"
-                      y2="94"
-                      stroke="currentColor"
-                      stroke-opacity="0.2"
-                      vector-effect="non-scaling-stroke"
-                    />
-
-                    <polygon
-                      points={chart.areaPoints}
-                      fill="url(#tasmota-pwr-grad-{deviceId})"
-                    />
-                    <polyline
-                      fill="none"
-                      stroke="var(--color-primary, #fa6831)"
-                      stroke-width="2"
-                      vector-effect="non-scaling-stroke"
-                      stroke-linejoin="round"
-                      stroke-linecap="round"
-                      points={chart.linePoints}
-                    />
-                  </svg>
-                  <span
-                    class="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
-                    style="left: {chart.lastXPercent}%; top: {chart.lastYPercent}%; background-color: var(--color-primary, #fa6831);"
-                  ></span>
-                </div>
-                <div class="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums select-none">
-                  <span>{chart.spanLabel}</span>
-                  {#if chart.midSpanLabel}
-                    <span>{chart.midSpanLabel}</span>
-                  {/if}
-                  <span>Now</span>
-                </div>
-              </div>
-            </div>
-            <p class="text-[10px] text-muted-foreground/80">
-              {t('tasmota-power.section.sampleIntervalHint', {
-                seconds: pollSec,
-              })}
-            </p>
-          {:else}
-            <p class="py-4 text-center text-xs text-muted-foreground">
-              {t('tasmota-power.section.graphEmpty')}
-            </p>
           {/if}
         </div>
+        <PowerButtons
+          {deviceId}
+          {printer}
+          {plugState}
+          confirm={status.confirm_turn_off !== false}
+          locked={!status.can_turn_off}
+          onswitched={(next: PowerStatus) => (status = next)}
+          onfault={(thrown: unknown) => (fault = thrown)}
+        />
+      </div>
 
-        <!-- Recent Print Files Energy History -->
-        {#if status.print_history && status.print_history.length > 0}
-          <div class="flex flex-col rounded-sm border border-border bg-background/50">
-            <div class="px-2.5 py-1.5 border-b border-border">
-              <span class="text-[11px] font-medium text-muted-foreground">
-                {t('tasmota-power.section.recentPrintsTitle')}
-              </span>
-            </div>
-            <div class="divide-y divide-border">
-              {#each status.print_history.slice(0, 5) as item (item.started_at + item.file_name)}
-                <div class="flex items-center justify-between gap-3 px-2.5 py-1.5 text-xs">
-                  <span
-                    class="truncate font-medium text-foreground min-w-0"
-                    title={item.file_name}
-                  >
-                    {item.file_name}
-                  </span>
-                  <div class="flex items-center gap-3 shrink-0 text-muted-foreground tabular-nums">
-                    <span>{formatDuration(item.duration_sec)}</span>
-                    <span>{Math.round(item.avg_watts)} W</span>
-                    <span class="font-semibold text-foreground">
-                      {formatEnergy(item.energy_wh)}
-                    </span>
-                  </div>
-                </div>
-              {/each}
-            </div>
-          </div>
+      {#if plugState === 'offline'}
+        <Alert variant="destructive" data-part="offline">
+          <AlertTitle>{t('power.section.offline')}</AlertTitle>
+          {#if plug?.last_error}
+            <AlertDescription>{plug.last_error}</AlertDescription>
+          {/if}
+        </Alert>
+      {/if}
+
+      <FaultNote {fault} />
+
+      <div
+        class="border-border flex flex-wrap items-center justify-between gap-2 border-t pt-3"
+      >
+        <div class="flex items-center gap-2">
+          <Switch
+            id={`${uid}-auto-off`}
+            checked={status.config.auto_off_after_print}
+            disabled={busy}
+            onCheckedChange={(next: boolean) => void setAutoOff(next)}
+          />
+          <Label for={`${uid}-auto-off`} variant="option">
+            {t('power.section.autoOff')}
+          </Label>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {#if status.auto_off_pending}
+            {#if status.printer_moving}
+              <Badge variant="warning">
+                {t('power.section.autoOffMoving')}
+              </Badge>
+            {:else}
+              <Badge variant="info">
+                {t('power.section.autoOffIn', {
+                  span: formatSpan(status.auto_off_remaining_sec),
+                })}
+              </Badge>
+            {/if}
+          {/if}
+          {#if !status.can_turn_off && status.lock_reason}
+            <span class="text-muted-foreground text-xs" data-part="lock">
+              {status.lock_reason}
+            </span>
+          {/if}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <StatusCard
+          edge
+          headingLevel="h4"
+          tone={session?.active ? 'active' : 'quiet'}
+          title={session?.active
+            ? t('power.section.session.now')
+            : t('power.section.session.last')}
+          value={session ? formatEnergy(session.energy_wh) : undefined}
+          caption={session ? usageOf(session) : t('power.section.session.none')}
+        />
+        <StatusCard
+          edge
+          headingLevel="h4"
+          tone={print?.active ? 'active' : 'quiet'}
+          title={print?.active
+            ? t('power.section.print.now')
+            : t('power.section.print.last')}
+          value={print ? formatEnergy(print.energy_wh) : undefined}
+          caption={print
+            ? t('power.section.print.of', {
+                file: print.file_name,
+                span: formatSpan(print.duration_sec),
+              })
+            : t('power.section.print.none')}
+        />
+      </div>
+
+      <div class="flex flex-col gap-2" data-part="graph">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h4 class="text-muted-foreground text-xs font-medium">
+            {t('power.section.graph.title')}
+          </h4>
+          {#if latest !== undefined}
+            <span class="text-muted-foreground text-xs tabular-nums">
+              {t('power.section.graph.nowPeak', {
+                now: formatWatts(latest.watts),
+                peak: formatWatts(peak),
+              })}
+            </span>
+          {/if}
+        </div>
+        {#if samples.length > 1}
+          <PowerChart {samples} class="h-40" />
+          <p class="text-muted-foreground text-xs">
+            {t('power.section.graph.step', {
+              span: formatSpan(status.poll_interval_sec ?? 5),
+            })}
+          </p>
+        {:else}
+          <p class="text-muted-foreground py-3 text-center text-xs">
+            {t('power.section.graph.empty')}
+          </p>
         {/if}
-      {/if}
+      </div>
 
-      {#if errorMsg}
-        <p class="text-xs text-destructive">{errorMsg}</p>
+      {#if recent.length > 0}
+        <div class="flex flex-col gap-2" data-part="recent-prints">
+          <h4 class="text-muted-foreground text-xs font-medium">
+            {t('power.section.recent')}
+          </h4>
+          <RowList>
+            {#each recent as record (printKey(record))}
+              <DataRow
+                mono
+                primary={record.file_name}
+                secondaryValues={[
+                  formatEnergy(record.energy_wh),
+                  usageOf(record),
+                ]}
+              />
+            {/each}
+          </RowList>
+        </div>
       {/if}
-    </CardContent>
-  </Card>
-
-  <AlertDialog
-    open={confirmingOff}
-    onOpenChange={(next: boolean) => {
-      confirmingOff = next;
-    }}
-  >
-    <AlertDialogContent data-module={OWN_MODULE}>
-      <AlertDialogHeader>
-        <AlertDialogTitle>
-          {t('tasmota-power.section.confirmOffTitle')}
-        </AlertDialogTitle>
-        <AlertDialogDescription>
-          {t('tasmota-power.section.confirmOffDescription', {
-            plug: status.plug?.friendly_name
-              ? `${status.plug.friendly_name} (${plugTarget})`
-              : plugTarget,
-          })}
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <AlertDialogFooter>
-        <AlertDialogCancel>
-          {t('tasmota-power.section.confirmOffCancel')}
-        </AlertDialogCancel>
-        <AlertDialogAction
-          variant="destructive"
-          onclick={() => void handlePower('off')}
-        >
-          {t('tasmota-power.section.confirmOffYes')}
-        </AlertDialogAction>
-      </AlertDialogFooter>
-    </AlertDialogContent>
-  </AlertDialog>
-{/if}
+    {/if}
+  </CardContent>
+</Card>

@@ -25,8 +25,8 @@ var (
 		fault.ShowDetail,
 	))
 	NotConfigured = fault.Register(faultDomain, "NOT_CONFIGURED", http.StatusPreconditionFailed, fault.Document(
-		"Tasmota plug or MQTT broker is not configured",
-		"Configure mqtt_broker in extension settings and set the printer Tasmota topic.",
+		"No smart plug is set up for this printer",
+		"Set up a plug for the printer on the Plugs tab of the extension's settings.",
 		fault.RetryNever,
 		fault.ShowDetail,
 	))
@@ -44,13 +44,13 @@ var (
 		fault.ShowDetail,
 	))
 	PlugRefused = fault.Register(faultDomain, "PLUG_REFUSED", http.StatusBadGateway, fault.Document(
-		"Tasmota plug did not confirm the requested power state",
-		"Verify that the plug is online and that PowerLock, PowerOnState 4, or an invalid relay number is not blocking control.",
+		"The smart plug did not confirm the requested power state",
+		"Verify that the plug is online and that nothing on the plug blocks control, such as a Tasmota PowerLock, PowerOnState 4, or a relay number the plug does not have.",
 		fault.RetryAllowed,
 		fault.ShowDetail,
 	))
 	TopicInUse = fault.Register(faultDomain, "TOPIC_ALREADY_ASSIGNED", http.StatusConflict, fault.Document(
-		"Tasmota topic and relay are already assigned to another printer",
+		"That plug and relay are already assigned to another printer",
 		"Unassign the plug/relay from the other printer first, or pick a different relay or plug.",
 		fault.RetryNever,
 		fault.ShowDetail,

@@ -1,9 +1,9 @@
 name: tasmota-power
-title: Tasmota Power Control
-summary: Control and monitor Tasmota smart plugs for printers via MQTT (external or built-in broker) or Direct HTTP, with active-print power-off protection and auto-off after print.
+title: Connect Power Control
+summary: Control and monitor smart plugs (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant) for printers via MQTT, Direct HTTP, or REST, with active-print power-off protection and auto-off after print.
 codeowner: Pixelplanet
 kind: sink
-version: 0.4.1
+version: 0.5.0
 license: MIT
 contract_major: 1
 openapi: openapi.json
@@ -19,26 +19,38 @@ permissions:
 
 needs:
   data: true
+  listen:
+    - name: mqtt
+      tcp: 1883
+      why: Smart plugs connect to the built-in MQTT broker here. It is used only while the built-in broker is switched on.
 
 options:
   - key: mqtt_host
     type: string
-    summary: Hostname or IP address of the MQTT broker.
+    summary: Optional. Hostname or IP address of the MQTT broker. A value here fixes the broker host; leave it empty to set the broker on the Connections tab.
   - key: http_host
     type: string
-    summary: Hostname or IP address of a Tasmota smart plug controlled directly over HTTP.
+    summary: Optional. Hostname or IP address of a Tasmota or Shelly plug reached directly over HTTP. It is offered as the address when a plug is set up; each printer keeps its own on the Plugs tab.
+  - key: ha_url
+    type: url
+    summary: Optional. Home Assistant base URL, such as http://homeassistant.local:8123. A value here fixes the URL; leave it empty to set it on the Connections tab.
 
 egress:
   - option: mqtt_host
     ports: [1883, 8883]
     from: process
-    why: Connects to the operator's MQTT broker to monitor and switch Tasmota smart plugs
-    sends: Tasmota power commands and telemetry queries for assigned printer plugs
+    why: Connects to the operator's MQTT broker to monitor and switch Tasmota, Shelly, Zigbee2MQTT, ESPHome, OpenBeken, or Generic MQTT smart plugs
+    sends: Smart plug power commands and telemetry queries for assigned printer plugs
   - option: http_host
     ports: [80, 443]
     from: process
-    why: Polls and switches a Tasmota smart plug directly over HTTP when no MQTT broker is used
-    sends: Tasmota Status 0 queries and POWER relay commands to the plug's /cm endpoint
+    why: Polls and switches a Tasmota or Shelly smart plug directly over HTTP when no MQTT broker is used
+    sends: Tasmota /cm or Shelly Gen1/Gen2+ HTTP status queries and relay commands
+  - option: ha_url
+    ports: [8123, 80, 443]
+    from: process
+    why: Polls switch/power sensor states and calls homeassistant.turn_on/turn_off services when the Home Assistant driver is used
+    sends: Authenticated Home Assistant REST API requests for assigned printer switch entities
 
 platforms:
   - linux_amd64
@@ -51,6 +63,10 @@ ui:
   entry: ui/index.js
   library: ">=0.0.1 <1.0.0"
   contributes:
+    pages:
+      - path: power
+        title: Power
+        icon: chart-line
     device_section:
       - id: power-plug
         title: Power Control
@@ -58,5 +74,20 @@ ui:
       - id: power-status
         title: Power
     settings:
-      - id: settings
-        title: Settings
+      - id: plugs
+        title: Plugs
+      - id: connections
+        title: Connections
+      - id: automation
+        title: Automation
+    cards:
+      - id: power
+        title: Printer power
+        description: What your printers draw now, and which plugs are on.
+        icon: chart-line
+        size: {w: 4, h: 4}
+        least: {w: 2, h: 2}
+        settings:
+          - key: printers
+            kind: printers
+            label: Printers
