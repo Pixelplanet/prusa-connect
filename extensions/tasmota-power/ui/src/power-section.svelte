@@ -122,6 +122,9 @@
 
     const first = coords[0];
     const last = coords[coords.length - 1];
+    const firstSample = samples[0];
+    const lastSample = samples[samples.length - 1];
+    if (!first || !last || !firstSample || !lastSample) return undefined;
     const polyPts =
       samples.length === 1
         ? [
@@ -136,7 +139,7 @@
     const startX = samples.length === 1 ? 0 : first.x;
     const areaPoints = `${startX.toFixed(1)},${bottomY.toFixed(1)} ${linePoints} ${last.x.toFixed(1)},${bottomY.toFixed(1)}`;
 
-    const spanSec = Math.max(0, samples[samples.length - 1].ts - samples[0].ts);
+    const spanSec = Math.max(0, lastSample.ts - firstSample.ts);
     const spanLabel =
       spanSec >= 60 ? `-${Math.round(spanSec / 60)}m` : `-${spanSec}s`;
     const midSpanLabel =
@@ -147,7 +150,7 @@
       areaPoints,
       maxWatts,
       peakWatts: rawPeak,
-      currentWatts: samples[samples.length - 1].watts,
+      currentWatts: lastSample.watts,
       spanLabel,
       midSpanLabel,
       lastXPercent: (last.x / width) * 100,
