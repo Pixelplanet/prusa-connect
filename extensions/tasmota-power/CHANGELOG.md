@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 - 2026-11-19
+
+- Replace the inline Turn Off confirmation bar with Prusa Connect's native `AlertDialog` modal.
+- Display the smart plug power telemetry sampling step (`5s`) on the power usage graph and expose `poll_interval_sec` in the device status API.
+
 ## 0.3.0 - 2026-11-19
 
 - Support multi-relay Tasmota devices and `SetOption26 1` (`POWER1`..`POWER8`) with a Relay selector in Settings and per-relay double-assignment locking.

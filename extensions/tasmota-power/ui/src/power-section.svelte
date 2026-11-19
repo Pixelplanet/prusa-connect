@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
     Badge,
     Button,
     Card,
@@ -11,6 +19,7 @@
 
   import { createApi, type PowerSample, type PowerStatus } from './api';
   import { heldHost } from './host';
+  import { OWN_MODULE } from './own-module';
 
   interface Props {
     deviceId: string;
@@ -26,27 +35,13 @@
   let busy = $state(false);
   let errorMsg = $state('');
   let confirmingOff = $state(false);
-  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
-
-  function clearConfirmOff() {
-    confirmingOff = false;
-    if (confirmTimer !== undefined) {
-      clearTimeout(confirmTimer);
-      confirmTimer = undefined;
-    }
-  }
 
   function requestTurnOff() {
     if (status?.confirm_turn_off === false) {
       void handlePower('off');
       return;
     }
-    clearConfirmOff();
     confirmingOff = true;
-    confirmTimer = setTimeout(() => {
-      confirmingOff = false;
-      confirmTimer = undefined;
-    }, 6000);
   }
 
   function formatEnergy(wh: number): string {
@@ -158,14 +153,11 @@
     const timer = setInterval(() => {
       void refresh();
     }, 5000);
-    return () => {
-      clearInterval(timer);
-      clearConfirmOff();
-    };
+    return () => clearInterval(timer);
   });
 
   async function handlePower(action: 'on' | 'off') {
-    clearConfirmOff();
+    confirmingOff = false;
     busy = true;
     errorMsg = '';
     try {
@@ -282,38 +274,14 @@
             >
               {t('tasmota-power.section.turnOn')}
             </Button>
-            {#if confirmingOff && status.plug?.online !== false && status.plug?.power !== 'OFF' && status.can_turn_off}
-              <div class="flex items-center gap-1.5 rounded-sm border border-destructive/60 bg-destructive/10 px-2 py-0.5">
-                <span class="text-xs font-medium text-destructive-foreground">
-                  {t('tasmota-power.section.confirmOffPrompt')}
-                </span>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  disabled={busy}
-                  onclick={() => void handlePower('off')}
-                >
-                  {t('tasmota-power.section.confirmOffYes')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  onclick={clearConfirmOff}
-                >
-                  {t('tasmota-power.section.confirmOffCancel')}
-                </Button>
-              </div>
-            {:else}
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={busy || status.plug?.online === false || !status.can_turn_off || status.plug?.power === 'OFF'}
-                onclick={requestTurnOff}
-              >
-                {t('tasmota-power.section.turnOff')}
-              </Button>
-            {/if}
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={busy || status.plug?.online === false || !status.can_turn_off || status.plug?.power === 'OFF'}
+              onclick={requestTurnOff}
+            >
+              {t('tasmota-power.section.turnOff')}
+            </Button>
           </div>
         </div>
 
@@ -438,11 +406,19 @@
         </div>
 
         <!-- Live Power Graph -->
+        {@const pollSec = status.poll_interval_sec ?? 5}
         <div class="flex flex-col gap-1.5 rounded-sm border border-border bg-background/50 p-2.5">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-[11px] font-medium text-muted-foreground">
-              {t('tasmota-power.section.graphTitle')}
-            </span>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] font-medium text-muted-foreground">
+                {t('tasmota-power.section.graphTitle')}
+              </span>
+              <Badge variant="outline">
+                {t('tasmota-power.section.sampleIntervalBadge', {
+                  seconds: pollSec,
+                })}
+              </Badge>
+            </div>
             {#if chart}
               <span class="text-[11px] text-muted-foreground tabular-nums">
                 {t('tasmota-power.section.graphLivePeak', {
@@ -532,6 +508,11 @@
                 </div>
               </div>
             </div>
+            <p class="text-[10px] text-muted-foreground/80">
+              {t('tasmota-power.section.sampleIntervalHint', {
+                seconds: pollSec,
+              })}
+            </p>
           {:else}
             <p class="py-4 text-center text-xs text-muted-foreground">
               {t('tasmota-power.section.graphEmpty')}
@@ -575,4 +556,37 @@
       {/if}
     </CardContent>
   </Card>
+
+  <AlertDialog
+    open={confirmingOff}
+    onOpenChange={(next: boolean) => {
+      confirmingOff = next;
+    }}
+  >
+    <AlertDialogContent data-module={OWN_MODULE}>
+      <AlertDialogHeader>
+        <AlertDialogTitle>
+          {t('tasmota-power.section.confirmOffTitle')}
+        </AlertDialogTitle>
+        <AlertDialogDescription>
+          {t('tasmota-power.section.confirmOffDescription', {
+            plug: status.plug?.friendly_name
+              ? `${status.plug.friendly_name} (${status.config.tasmota_topic})`
+              : status.config.tasmota_topic,
+          })}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel>
+          {t('tasmota-power.section.confirmOffCancel')}
+        </AlertDialogCancel>
+        <AlertDialogAction
+          variant="destructive"
+          onclick={() => void handlePower('off')}
+        >
+          {t('tasmota-power.section.confirmOffYes')}
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>
 {/if}
