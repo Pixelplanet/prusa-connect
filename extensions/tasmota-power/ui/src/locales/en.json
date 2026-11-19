@@ -10,6 +10,9 @@
   "tasmota-power.section.plugUnknown": "Unknown",
   "tasmota-power.section.turnOn": "Turn On",
   "tasmota-power.section.turnOff": "Turn Off",
+  "tasmota-power.section.confirmOffPrompt": "Cut power?",
+  "tasmota-power.section.confirmOffYes": "Confirm Turn Off",
+  "tasmota-power.section.confirmOffCancel": "Cancel",
   "tasmota-power.section.autoOffLabel": "Turn printer off when print finishes",
   "tasmota-power.section.autoOffMoving": "Waiting for movement to stop...",
   "tasmota-power.section.autoOffPending": "Auto-off in {seconds}s",
@@ -72,5 +75,7 @@
   "tasmota-power.settings.manualPlaceholder": "e.g. tasmota_FA3578",
   "tasmota-power.settings.saveTopic": "Save Assignment",
   "tasmota-power.settings.assignedSaved": "Saved",
-  "tasmota-power.settings.noPlugAssigned": "No plug assigned"
+  "tasmota-power.settings.noPlugAssigned": "No plug assigned",
+  "tasmota-power.settings.confirmTurnOffLabel": "Confirm before turning power off",
+  "tasmota-power.settings.confirmTurnOffHint": "Ask for confirmation when clicking Turn Off on a printer. Disable to cut power immediately with a single click."
 }

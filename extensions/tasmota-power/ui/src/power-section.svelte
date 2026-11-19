@@ -25,6 +25,29 @@
   let status = $state<PowerStatus | undefined>(undefined);
   let busy = $state(false);
   let errorMsg = $state('');
+  let confirmingOff = $state(false);
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearConfirmOff() {
+    confirmingOff = false;
+    if (confirmTimer !== undefined) {
+      clearTimeout(confirmTimer);
+      confirmTimer = undefined;
+    }
+  }
+
+  function requestTurnOff() {
+    if (status?.confirm_turn_off === false) {
+      void handlePower('off');
+      return;
+    }
+    clearConfirmOff();
+    confirmingOff = true;
+    confirmTimer = setTimeout(() => {
+      confirmingOff = false;
+      confirmTimer = undefined;
+    }, 6000);
+  }
 
   function formatEnergy(wh: number): string {
     if (wh >= 1000) {
@@ -50,31 +73,32 @@
     peakWatts: number;
     currentWatts: number;
     spanLabel: string;
-    lastX: number;
-    lastY: number;
+    midSpanLabel: string;
+    lastXPercent: number;
+    lastYPercent: number;
   }
 
   function buildChart(samples: PowerSample[] | undefined): ChartGeometry | undefined {
     if (!samples || samples.length === 0) return undefined;
-    const width = 360;
-    const height = 92;
-    const padLeft = 36;
-    const padRight = 8;
-    const padTop = 8;
-    const padBottom = 10;
-    const plotW = width - padLeft - padRight;
+    const width = 1000;
+    const height = 100;
+    const padTop = 6;
+    const padBottom = 6;
     const plotH = height - padTop - padBottom;
 
     let rawPeak = 0;
     for (const sample of samples) {
       if (sample.watts > rawPeak) rawPeak = sample.watts;
     }
-    const maxWatts = Math.max(50, Math.ceil(Math.max(rawPeak, 10) / 50) * 50);
+    const maxWatts = Math.max(
+      100,
+      Math.ceil(Math.max(rawPeak * 1.15, 10) / 50) * 50,
+    );
     const bottomY = padTop + plotH;
 
     const coords = samples.map((sample, idx) => {
       const ratio = samples.length === 1 ? 1 : idx / (samples.length - 1);
-      const x = padLeft + ratio * plotW;
+      const x = ratio * width;
       const clamped = Math.max(0, Math.min(maxWatts, sample.watts));
       const y = bottomY - (clamped / maxWatts) * plotH;
       return { x, y };
@@ -85,19 +109,22 @@
     const polyPts =
       samples.length === 1
         ? [
-            { x: padLeft, y: last.y },
-            { x: width - padRight, y: last.y },
+            { x: 0, y: last.y },
+            { x: width, y: last.y },
           ]
         : coords;
 
     const linePoints = polyPts
       .map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`)
       .join(' ');
-    const startX = samples.length === 1 ? padLeft : first.x;
+    const startX = samples.length === 1 ? 0 : first.x;
     const areaPoints = `${startX.toFixed(1)},${bottomY.toFixed(1)} ${linePoints} ${last.x.toFixed(1)},${bottomY.toFixed(1)}`;
 
     const spanSec = Math.max(0, samples[samples.length - 1].ts - samples[0].ts);
-    const spanLabel = spanSec >= 60 ? `-${Math.round(spanSec / 60)}m` : `-${spanSec}s`;
+    const spanLabel =
+      spanSec >= 60 ? `-${Math.round(spanSec / 60)}m` : `-${spanSec}s`;
+    const midSpanLabel =
+      spanSec >= 120 ? `-${Math.round(spanSec / 120)}m` : '';
 
     return {
       linePoints,
@@ -106,8 +133,9 @@
       peakWatts: rawPeak,
       currentWatts: samples[samples.length - 1].watts,
       spanLabel,
-      lastX: last.x,
-      lastY: last.y,
+      midSpanLabel,
+      lastXPercent: (last.x / width) * 100,
+      lastYPercent: (last.y / height) * 100,
     };
   }
 
@@ -130,10 +158,14 @@
     const timer = setInterval(() => {
       void refresh();
     }, 5000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      clearConfirmOff();
+    };
   });
 
   async function handlePower(action: 'on' | 'off') {
+    clearConfirmOff();
     busy = true;
     errorMsg = '';
     try {
@@ -237,14 +269,38 @@
             >
               {t('tasmota-power.section.turnOn')}
             </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={busy || !status.can_turn_off || status.plug?.power === 'OFF'}
-              onclick={() => void handlePower('off')}
-            >
-              {t('tasmota-power.section.turnOff')}
-            </Button>
+            {#if confirmingOff && status.plug?.power !== 'OFF' && status.can_turn_off}
+              <div class="flex items-center gap-1.5 rounded-sm border border-destructive/60 bg-destructive/10 px-2 py-0.5">
+                <span class="text-xs font-medium text-destructive-foreground">
+                  {t('tasmota-power.section.confirmOffPrompt')}
+                </span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={busy}
+                  onclick={() => void handlePower('off')}
+                >
+                  {t('tasmota-power.section.confirmOffYes')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onclick={clearConfirmOff}
+                >
+                  {t('tasmota-power.section.confirmOffCancel')}
+                </Button>
+              </div>
+            {:else}
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={busy || !status.can_turn_off || status.plug?.power === 'OFF'}
+                onclick={requestTurnOff}
+              >
+                {t('tasmota-power.section.turnOff')}
+              </Button>
+            {/if}
           </div>
         </div>
 
@@ -385,56 +441,83 @@
           </div>
 
           {#if chart}
-            <svg
-              viewBox="0 0 360 92"
-              class="h-24 w-full overflow-visible"
-              preserveAspectRatio="none"
-            >
-              <defs>
-                <linearGradient id="tasmota-pwr-grad-{deviceId}" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.32" />
-                  <stop offset="100%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.02" />
-                </linearGradient>
-              </defs>
+            <div class="flex items-stretch gap-2">
+              <div class="flex w-11 shrink-0 flex-col justify-between pb-4 pt-0.5 text-right text-[10px] text-muted-foreground tabular-nums select-none">
+                <span>{chart.maxWatts} W</span>
+                <span>{Math.round(chart.maxWatts / 2)} W</span>
+                <span>0 W</span>
+              </div>
+              <div class="flex min-w-0 flex-1 flex-col gap-1">
+                <div class="relative h-24 w-full">
+                  <svg
+                    viewBox="0 0 1000 100"
+                    class="h-full w-full overflow-visible"
+                    preserveAspectRatio="none"
+                  >
+                    <defs>
+                      <linearGradient id="tasmota-pwr-grad-{deviceId}" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.32" />
+                        <stop offset="100%" stop-color="var(--color-primary, #fa6831)" stop-opacity="0.02" />
+                      </linearGradient>
+                    </defs>
 
-              <!-- Grid lines -->
-              <line x1="36" y1="8" x2="352" y2="8" stroke="currentColor" stroke-opacity="0.12" stroke-dasharray="2 3" />
-              <line x1="36" y1="45" x2="352" y2="45" stroke="currentColor" stroke-opacity="0.12" stroke-dasharray="2 3" />
-              <line x1="36" y1="82" x2="352" y2="82" stroke="currentColor" stroke-opacity="0.2" />
+                    <line
+                      x1="0"
+                      y1="6"
+                      x2="1000"
+                      y2="6"
+                      stroke="currentColor"
+                      stroke-opacity="0.12"
+                      stroke-dasharray="4 4"
+                      vector-effect="non-scaling-stroke"
+                    />
+                    <line
+                      x1="0"
+                      y1="50"
+                      x2="1000"
+                      y2="50"
+                      stroke="currentColor"
+                      stroke-opacity="0.12"
+                      stroke-dasharray="4 4"
+                      vector-effect="non-scaling-stroke"
+                    />
+                    <line
+                      x1="0"
+                      y1="94"
+                      x2="1000"
+                      y2="94"
+                      stroke="currentColor"
+                      stroke-opacity="0.2"
+                      vector-effect="non-scaling-stroke"
+                    />
 
-              <!-- Y-axis labels -->
-              <text x="32" y="11" text-anchor="end" fill="currentColor" fill-opacity="0.55" font-size="9">
-                {chart.maxWatts}W
-              </text>
-              <text x="32" y="48" text-anchor="end" fill="currentColor" fill-opacity="0.55" font-size="9">
-                {Math.round(chart.maxWatts / 2)}W
-              </text>
-              <text x="32" y="85" text-anchor="end" fill="currentColor" fill-opacity="0.55" font-size="9">
-                0W
-              </text>
-
-              <polygon
-                points={chart.areaPoints}
-                fill="url(#tasmota-pwr-grad-{deviceId})"
-              />
-              <polyline
-                fill="none"
-                stroke="var(--color-primary, #fa6831)"
-                stroke-width="1.75"
-                stroke-linejoin="round"
-                stroke-linecap="round"
-                points={chart.linePoints}
-              />
-              <circle
-                cx={chart.lastX}
-                cy={chart.lastY}
-                r="2.5"
-                fill="var(--color-primary, #fa6831)"
-              />
-            </svg>
-            <div class="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums pl-9">
-              <span>{chart.spanLabel}</span>
-              <span>Now</span>
+                    <polygon
+                      points={chart.areaPoints}
+                      fill="url(#tasmota-pwr-grad-{deviceId})"
+                    />
+                    <polyline
+                      fill="none"
+                      stroke="var(--color-primary, #fa6831)"
+                      stroke-width="2"
+                      vector-effect="non-scaling-stroke"
+                      stroke-linejoin="round"
+                      stroke-linecap="round"
+                      points={chart.linePoints}
+                    />
+                  </svg>
+                  <span
+                    class="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background"
+                    style="left: {chart.lastXPercent}%; top: {chart.lastYPercent}%; background-color: var(--color-primary, #fa6831);"
+                  ></span>
+                </div>
+                <div class="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums select-none">
+                  <span>{chart.spanLabel}</span>
+                  {#if chart.midSpanLabel}
+                    <span>{chart.midSpanLabel}</span>
+                  {/if}
+                  <span>Now</span>
+                </div>
+              </div>
             </div>
           {:else}
             <p class="py-4 text-center text-xs text-muted-foreground">

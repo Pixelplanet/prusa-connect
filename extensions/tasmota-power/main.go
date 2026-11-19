@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.2.2")
+	release = extension.Version("0.2.3")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -62,9 +62,19 @@ type Settings struct {
 	KeepPassword       bool   `json:"keep_password,omitempty"`
 	MQTTClientID       string `json:"mqtt_client_id"`
 	AutoOffCooldownSec int    `json:"auto_off_cooldown_sec"`
+	ConfirmTurnOff     *bool  `json:"confirm_turn_off"`
 
 	// Legacy option from 0.1.0; parsed into MQTTHost/MQTTPort/MQTTTLS when present.
 	MQTTBroker string `json:"mqtt_broker,omitempty"`
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func (s Settings) confirmTurnOffEnabled() bool {
+	if s.ConfirmTurnOff == nil {
+		return true
+	}
+	return *s.ConfirmTurnOff
 }
 
 func defaultSettings() Settings {
@@ -72,6 +82,7 @@ func defaultSettings() Settings {
 		MQTTPort:           defaultMQTTPort,
 		MQTTClientID:       defaultMQTTClientID,
 		AutoOffCooldownSec: defaultCooldownSec,
+		ConfirmTurnOff:     boolPtr(true),
 	}
 }
 
@@ -112,6 +123,9 @@ func normalizeSettings(s Settings) Settings {
 	}
 	if s.AutoOffCooldownSec < 0 {
 		s.AutoOffCooldownSec = 0
+	}
+	if s.ConfirmTurnOff == nil {
+		s.ConfirmTurnOff = boolPtr(true)
 	}
 	s.HasPassword = s.MQTTPassword != ""
 	return s
@@ -1460,6 +1474,7 @@ type statusResponse struct {
 	AutoOffPending      bool               `json:"auto_off_pending"`
 	AutoOffRemainingSec int                `json:"auto_off_remaining_sec"`
 	DefaultCooldownSec  int                `json:"default_cooldown_sec"`
+	ConfirmTurnOff      bool               `json:"confirm_turn_off"`
 	PowerHistory        []PowerSample      `json:"power_history,omitempty"`
 	SessionUsage        *PowerSession      `json:"session_usage,omitempty"`
 	CurrentPrintUsage   *PrintPowerRecord  `json:"current_print_usage,omitempty"`
@@ -1550,6 +1565,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		AutoOffPending:      pending,
 		AutoOffRemainingSec: remaining,
 		DefaultCooldownSec:  s.AutoOffCooldownSec,
+		ConfirmTurnOff:      s.confirmTurnOffEnabled(),
 		PowerHistory:        historyCopy,
 		SessionUsage:        sessionCopy,
 		CurrentPrintUsage:   currentPrintCopy,
