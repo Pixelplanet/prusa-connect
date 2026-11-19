@@ -99,6 +99,7 @@ export interface PowerStatus {
   auto_off_remaining_sec: number;
   default_cooldown_sec: number;
   confirm_turn_off?: boolean;
+  poll_interval_sec?: number;
   power_history?: PowerSample[];
   session_usage?: PowerSession;
   current_print_usage?: PrintPowerRecord;

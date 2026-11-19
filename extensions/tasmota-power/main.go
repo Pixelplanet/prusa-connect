@@ -34,12 +34,13 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.3.0")
+	release = extension.Version("0.3.1")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
 	defaultMQTTClientID = "prusa-connect-tasmota"
 	defaultCooldownSec  = 120
+	pollIntervalSec     = 5
 	configsFileName     = "configs.json"
 	settingsFileName    = "settings.json"
 	usageFileName       = "usage.json"
@@ -1897,7 +1898,7 @@ func (m *module) updateDeviceUsage(deviceID string, cfg DeviceConfig, safety pri
 // --- Background Auto-Off & Usage Polling Loop ---
 
 func (m *module) autoOffLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Duration(pollIntervalSec) * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -2048,6 +2049,7 @@ type statusResponse struct {
 	AutoOffRemainingSec int                `json:"auto_off_remaining_sec"`
 	DefaultCooldownSec  int                `json:"default_cooldown_sec"`
 	ConfirmTurnOff      bool               `json:"confirm_turn_off"`
+	PollIntervalSec     int                `json:"poll_interval_sec"`
 	PowerHistory        []PowerSample      `json:"power_history,omitempty"`
 	SessionUsage        *PowerSession      `json:"session_usage,omitempty"`
 	CurrentPrintUsage   *PrintPowerRecord  `json:"current_print_usage,omitempty"`
@@ -2144,6 +2146,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		AutoOffRemainingSec: remaining,
 		DefaultCooldownSec:  s.AutoOffCooldownSec,
 		ConfirmTurnOff:      s.confirmTurnOffEnabled(),
+		PollIntervalSec:     pollIntervalSec,
 		PowerHistory:        historyCopy,
 		SessionUsage:        sessionCopy,
 		CurrentPrintUsage:   currentPrintCopy,
