@@ -50,14 +50,23 @@ jobs:
 
       - name: Build and pack tasmota-power release
         run: |
-          mkdir -p release/tasmota-power
+          sh extensions/scripts/check-shape.sh tasmota-power
           go -C extensions/tasmota-power mod tidy
           go -C extensions/tasmota-power test -v ./...
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go -C extensions/tasmota-power build -o /tmp/tasmota-power_linux_amd64 .
-          sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist /tmp/tasmota-power_linux_amd64 release/tasmota-power
-          tar -czf tasmota-power-linux-amd64.tar.gz -C release tasmota-power
+          sh extensions/scripts/build-release.sh extensions/tasmota-power release/tasmota-power
+          tar -czf tasmota-power-release.tar.gz -C release/tasmota-power .
+          mkdir -p release-linux-amd64
+          sh extensions/scripts/pack-release.sh extensions/tasmota-power/ui/dist release/tasmota-power/tasmota-power_linux_amd64 release-linux-amd64/tasmota-power
+          tar -czf tasmota-power-linux-amd64.tar.gz -C release-linux-amd64 tasmota-power
 
-      - name: Upload tasmota-power release tarball
+      - name: Upload tasmota-power multi-platform release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasmota-power-release
+          path: tasmota-power-release.tar.gz
+          retention-days: 30
+
+      - name: Upload tasmota-power linux/amd64 tarball
         uses: actions/upload-artifact@v4
         with:
           name: tasmota-power-linux-amd64
