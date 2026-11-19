@@ -652,7 +652,7 @@
       {#snippet actions()}
         <Button
           type="button"
-          variant="outline"
+          variant="secondary"
           disabled={testing || savingSettings || (!mqttBuiltin && !mqttHost.trim())}
           onclick={() => void handleTest()}
         >
@@ -691,7 +691,7 @@
         <Button
           type="button"
           size="sm"
-          variant="outline"
+          variant="secondary"
           disabled={scanning || !settingsMeta?.mqtt_connected}
           onclick={() => void handleScan()}
         >
@@ -965,7 +965,7 @@
                   <Button
                     type="button"
                     size="sm"
-                    variant={isDirty ? 'default' : 'outline'}
+                    variant={isDirty ? 'default' : 'secondary'}
                     disabled={busy || !isDirty || Boolean(httpConflict)}
                     onclick={() => {
                       if (isHttpMode) {
@@ -1001,7 +1001,7 @@
                     <Button
                       type="button"
                       size="sm"
-                      variant="outline"
+                      variant="secondary"
                       disabled={busy}
                       onclick={() => void unassignDevice(dev.id)}
                     >
