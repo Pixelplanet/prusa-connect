@@ -57,6 +57,7 @@ type EmbeddedBroker struct {
 	byID     map[string]*brokerClient
 	retained map[string]retainedMessage
 	nextSeq  atomic.Uint64
+	accepted atomic.Uint64
 	wg       sync.WaitGroup
 }
 
@@ -130,6 +131,14 @@ func (b *EmbeddedBroker) ClientCount() int {
 	return len(b.clients)
 }
 
+// AcceptedCount returns the total number of TCP connections accepted by this broker listener.
+func (b *EmbeddedBroker) AcceptedCount() uint64 {
+	if b == nil {
+		return 0
+	}
+	return b.accepted.Load()
+}
+
 // Close shuts down the listener and disconnects all active clients.
 func (b *EmbeddedBroker) Close() error {
 	if b == nil {
@@ -171,6 +180,7 @@ func (b *EmbeddedBroker) acceptLoop() {
 			continue
 		}
 
+		b.accepted.Add(1)
 		b.wg.Add(1)
 		go b.handleConn(conn)
 	}

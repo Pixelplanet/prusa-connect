@@ -59,15 +59,25 @@
 
   const devices = $derived(fleet.devices);
 
+  function defaultLanHost(): string {
+    if (typeof window !== 'undefined' && window.location.hostname) {
+      return window.location.hostname;
+    }
+    return '127.0.0.1';
+  }
+
   function buildSettingsPayload() {
     const parsedPort = Number.parseInt(mqttPort, 10);
     const parsedCooldown = Number.parseInt(cooldownSec, 10);
     const effectiveTls = mqttBuiltin ? false : mqttTls;
     return {
       mqtt_builtin: mqttBuiltin,
-      mqtt_host: mqttHost.trim(),
-      mqtt_port:
-        Number.isFinite(parsedPort) && parsedPort > 0
+      mqtt_host: mqttBuiltin
+        ? mqttHost.trim() || defaultLanHost()
+        : mqttHost.trim(),
+      mqtt_port: mqttBuiltin
+        ? 1883
+        : Number.isFinite(parsedPort) && parsedPort > 0
           ? parsedPort
           : effectiveTls
             ? 8883
@@ -107,7 +117,10 @@
     return s;
   }
 
-  function syncAssignmentDrafts(aRes: AssignmentsResponse) {
+  function syncAssignmentDrafts(
+    aRes: AssignmentsResponse,
+    preserveDrafts = false,
+  ) {
     assignmentsData = aRes;
     const nextModes: Record<string, 'mqtt' | 'http'> = {};
     const nextSelected: Record<string, string> = {};
@@ -121,6 +134,16 @@
       const topic = cfg?.tasmota_topic ?? '';
       const httpHost = cfg?.http_host ?? '';
       const isHttp = cfg?.mode === 'http' || (Boolean(httpHost) && !topic);
+      if (preserveDrafts && selectedModes[dev.id] !== undefined) {
+        nextModes[dev.id] = selectedModes[dev.id];
+        nextSelected[dev.id] = selectedTopics[dev.id] ?? topic;
+        nextRelays[dev.id] = selectedRelays[dev.id] || (cfg?.relay_index || 1);
+        nextManual[dev.id] = manualTopics[dev.id] ?? topic;
+        nextHttpHosts[dev.id] = httpHosts[dev.id] ?? httpHost;
+        nextHttpPasswords[dev.id] = httpPasswords[dev.id] ?? '';
+        nextHasHttpPasswords[dev.id] = Boolean(cfg?.has_http_password);
+        continue;
+      }
       nextModes[dev.id] = isHttp ? 'http' : 'mqtt';
       nextSelected[dev.id] = topic;
       nextRelays[dev.id] = cfg?.relay_index || 1;
@@ -165,7 +188,7 @@
   function handleBuiltinToggle(next: boolean) {
     mqttBuiltin = next;
     testResult = undefined;
-    if (next && mqttTls && mqttPort === '8883') {
+    if (next) {
       mqttPort = '1883';
     }
   }
@@ -204,7 +227,7 @@
     try {
       const res = await api.saveSettings(buildSettingsPayload());
       applySettingsResponse(res);
-      syncAssignmentDrafts(await api.getAssignments());
+      syncAssignmentDrafts(await api.getAssignments(), true);
       if (res.mqtt_error) {
         settingsMessage = res.mqtt_error;
         settingsMessageIsError = true;
@@ -225,7 +248,7 @@
     assignmentError = '';
     try {
       await api.discoverPlugs();
-      syncAssignmentDrafts(await api.getAssignments());
+      syncAssignmentDrafts(await api.getAssignments(), true);
     } catch (err) {
       assignmentError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -425,8 +448,8 @@
             {#if settingsMeta?.mqtt_builtin_running}
               <Badge variant="outline">
                 {t('tasmota-power.settings.builtinStatus', {
-                  port: settingsMeta.mqtt_builtin_port ?? 1883,
-                  clients: settingsMeta.mqtt_builtin_clients ?? 0,
+                  port: String(settingsMeta.mqtt_builtin_port ?? 1883),
+                  clients: String(settingsMeta.mqtt_builtin_clients ?? 0),
                 })}
               </Badge>
             {/if}
@@ -436,7 +459,7 @@
             </span>
           </div>
           {#if settingsMeta?.mqtt_error && !settingsMeta.mqtt_connected}
-            <span class="text-destructive text-xs">
+            <span class="text-red-600 dark:text-red-400 text-xs">
               {settingsMeta.mqtt_error}
             </span>
           {/if}
@@ -451,6 +474,13 @@
             <p class="text-xs text-muted-foreground">
               {t('tasmota-power.settings.builtinBrokerHint')}
             </p>
+            {#if mqttBuiltin}
+              <p class="text-xs font-mono text-muted-foreground mt-1">
+                {t('tasmota-power.settings.builtinTargetHint', {
+                  host: mqttHost.trim() || defaultLanHost(),
+                })}
+              </p>
+            {/if}
           </div>
           <Switch
             id="mqtt-builtin"
@@ -459,9 +489,9 @@
           />
         </div>
 
-        <!-- Row 1: Host | Port | TLS (or Listen Port for built-in broker) -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
-          {#if !mqttBuiltin}
+        <!-- Row 1: Host | Port | TLS (external broker only; built-in broker is hardwired to port 1883) -->
+        {#if !mqttBuiltin}
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
             <div class="sm:col-span-7 flex flex-col gap-1.5">
               <Label for="mqtt-host">
                 {t('tasmota-power.settings.hostLabel')}
@@ -475,28 +505,22 @@
                   (mqttHost = (e.currentTarget as HTMLInputElement).value)}
               />
             </div>
-          {/if}
 
-          <div
-            class="{mqttBuiltin ? 'sm:col-span-4' : 'sm:col-span-3'} flex flex-col gap-1.5"
-          >
-            <Label for="mqtt-port">
-              {mqttBuiltin
-                ? t('tasmota-power.settings.builtinPortLabel')
-                : t('tasmota-power.settings.portLabel')}
-            </Label>
-            <Input
-              id="mqtt-port"
-              type="number"
-              min="1"
-              max="65535"
-              value={mqttPort}
-              oninput={(e: Event) =>
-                (mqttPort = (e.currentTarget as HTMLInputElement).value)}
-            />
-          </div>
+            <div class="sm:col-span-3 flex flex-col gap-1.5">
+              <Label for="mqtt-port">
+                {t('tasmota-power.settings.portLabel')}
+              </Label>
+              <Input
+                id="mqtt-port"
+                type="number"
+                min="1"
+                max="65535"
+                value={mqttPort}
+                oninput={(e: Event) =>
+                  (mqttPort = (e.currentTarget as HTMLInputElement).value)}
+              />
+            </div>
 
-          {#if !mqttBuiltin}
             <div class="sm:col-span-2 flex items-center justify-between sm:justify-start gap-2 h-9">
               <Switch
                 id="mqtt-tls"
@@ -507,8 +531,8 @@
                 {t('tasmota-power.settings.tlsLabel')}
               </Label>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
 
         <!-- Row 2: Username & Password inline -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -605,12 +629,21 @@
             class={[
               'rounded-sm border px-3 py-2 text-xs font-medium',
               settingsMessageIsError
-                ? 'border-destructive bg-destructive/15 text-destructive-foreground'
-                : 'border-success bg-success/15 text-emerald-400',
+                ? 'border-destructive bg-destructive/15 text-red-600 dark:text-red-400'
+                : 'border-success bg-success/15 text-emerald-700 dark:text-emerald-400',
             ]}
           >
             {settingsMessageIsError ? '✕ ' : '✓ '}
             {settingsMessage}
+          </div>
+        {/if}
+
+        {#if testResult?.warning || settingsMeta?.mqtt_warning}
+          <div
+            role="alert"
+            class="rounded-sm border border-amber-500/60 bg-amber-500/15 px-3 py-2 text-xs font-medium text-amber-800 dark:text-amber-300"
+          >
+            ⚠ {testResult?.warning || settingsMeta?.mqtt_warning}
           </div>
         {/if}
       </div>
@@ -619,7 +652,7 @@
         <Button
           type="button"
           variant="outline"
-          disabled={testing || savingSettings || !mqttHost.trim()}
+          disabled={testing || savingSettings || (!mqttBuiltin && !mqttHost.trim())}
           onclick={() => void handleTest()}
         >
           {testing

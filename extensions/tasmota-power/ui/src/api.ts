@@ -1,7 +1,8 @@
 import type { Operation } from '@prusa/connect';
 import type { ModuleHost } from '@prusa/connect-ui/slots';
+import { OWN_MODULE } from './own-module';
 
-const BASE = '/api/v1/modules/com.github.aux.prusa3d.tasmota-power';
+const BASE = `/api/v1/modules/${OWN_MODULE || 'com.github.aux.prusa3d.tasmota-power'}`;
 
 export interface TasmotaSettings {
   mqtt_builtin: boolean;
@@ -23,6 +24,7 @@ export interface SettingsResponse {
   mqtt_connected: boolean;
   mqtt_broker?: string;
   mqtt_error?: string;
+  mqtt_warning?: string;
   mqtt_builtin_running: boolean;
   mqtt_builtin_port?: number;
   mqtt_builtin_clients: number;
@@ -32,6 +34,7 @@ export interface BrokerTestResult {
   ok: boolean;
   broker?: string;
   error?: string;
+  warning?: string;
 }
 
 export interface DeviceConfig {

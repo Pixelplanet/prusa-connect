@@ -356,6 +356,12 @@ func TestEmbeddedMQTTBrokerEndToEnd(t *testing.T) {
 	if got := brk.ClientCount(); got != 2 {
 		t.Errorf("ClientCount() = %d, want 2", got)
 	}
+	if brk.AcceptedCount() < 2 {
+		t.Errorf("AcceptedCount() = %d, want >= 2", brk.AcceptedCount())
+	}
+	if warn := m.probeBuiltinBrokerReachability(brk, "127.0.0.1"); warn != "" {
+		t.Errorf("expected no warning for loopback host, got %q", warn)
+	}
 
 	if tok := plugClient.Subscribe("cmnd/ec_plug/POWER1", 1, func(_ mqtt.Client, msg mqtt.Message) {
 		if string(msg.Payload()) == "0" {

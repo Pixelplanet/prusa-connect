@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.4.0")
+	release = extension.Version("0.4.1")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -162,11 +162,7 @@ func (s Settings) mqttConfigured() bool {
 
 func (s Settings) brokerURL() string {
 	if s.MQTTBuiltin {
-		port := s.MQTTPort
-		if port <= 0 {
-			port = defaultMQTTPort
-		}
-		return fmt.Sprintf("tcp://%s", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		return fmt.Sprintf("tcp://%s", net.JoinHostPort("127.0.0.1", strconv.Itoa(defaultMQTTPort)))
 	}
 	host := strings.TrimSpace(s.MQTTHost)
 	if host == "" {
@@ -536,6 +532,7 @@ type module struct {
 	mqttUp         bool
 	mqttBroker     string
 	mqttError      string
+	mqttWarning    string
 	embeddedBroker *EmbeddedBroker
 	httpClient     *http.Client
 	plugs          map[string]*PlugTelemetry
@@ -986,23 +983,43 @@ func (m *module) buildMQTTOptions(s Settings, brokerURL, clientID string) *mqtt.
 	return opts
 }
 
+func (m *module) probeBuiltinBrokerReachability(brk *EmbeddedBroker, rawHost string) string {
+	if brk == nil {
+		return ""
+	}
+	host, _, _ := parseBrokerURL(strings.TrimSpace(rawHost))
+	if host == "" || host == "127.0.0.1" || host == "::1" || strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	before := brk.AcceptedCount()
+	target := net.JoinHostPort(host, strconv.Itoa(brk.Port()))
+	conn, err := net.DialTimeout("tcp", target, 1500*time.Millisecond)
+	if err != nil {
+		return fmt.Sprintf("Built-in broker is listening internally on :%d, but %s is not reachable (%v). If Prusa Connect runs in a Docker container (bridge network), publish TCP port 1883 (-p 1883:1883) on the container so smart plugs on your LAN can reach it — or use Direct HTTP (IP).", brk.Port(), target, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	_ = conn.Close()
+	if brk.AcceptedCount() == before {
+		return fmt.Sprintf("Another MQTT broker is already running on your network at %s! Smart plugs connecting to %s will reach that existing broker instead of this built-in broker. Disable the built-in broker and use your existing broker instead.", target, target)
+	}
+	return ""
+}
+
 func (m *module) reconnectMQTT(s Settings) {
 	m.disconnectMQTT()
 	brokerURL := s.brokerURL()
 	m.mu.Lock()
 	m.mqttBroker = brokerURL
 	m.mqttError = ""
+	m.mqttWarning = ""
 	m.mu.Unlock()
 
 	if s.MQTTBuiltin {
-		port := s.MQTTPort
-		if port <= 0 {
-			port = defaultMQTTPort
-		}
+		port := defaultMQTTPort
 		listenAddr := fmt.Sprintf(":%d", port)
 		brk, err := StartEmbeddedBroker(listenAddr, s.MQTTUsername, s.MQTTPassword)
 		if err != nil {
-			errMsg := fmt.Sprintf("built-in broker listen %s failed: %v", listenAddr, err)
+			errMsg := fmt.Sprintf("Port 1883 is already in use on this host (%v). Another MQTT broker appears to be running — disable the built-in broker and connect to your existing broker instead.", err)
 			m.mu.Lock()
 			m.mqttError = errMsg
 			m.mu.Unlock()
@@ -1013,6 +1030,12 @@ func (m *module) reconnectMQTT(s Settings) {
 		m.embeddedBroker = brk
 		m.mu.Unlock()
 		fmt.Fprintf(os.Stderr, "%s: started built-in MQTT broker on %s\n", logName, listenAddr)
+		if warn := m.probeBuiltinBrokerReachability(brk, s.MQTTHost); warn != "" {
+			m.mu.Lock()
+			m.mqttWarning = warn
+			m.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "%s: warning: %s\n", logName, warn)
+		}
 	}
 
 	if brokerURL == "" {
@@ -1100,7 +1123,7 @@ func (m *module) reconnectMQTT(s Settings) {
 	}()
 }
 
-func (m *module) testBroker(override *Settings) (bool, string, string) {
+func (m *module) testBroker(override *Settings) (bool, string, string, string) {
 	saved := m.settings()
 	candidate := saved
 	if override != nil {
@@ -1113,15 +1136,13 @@ func (m *module) testBroker(override *Settings) (bool, string, string) {
 
 	brokerURL := candidate.brokerURL()
 	if brokerURL == "" {
-		return false, "", "Broker host is required"
+		return false, "", "Broker host is required", ""
 	}
 
 	dialURL := brokerURL
+	var probeBrk *EmbeddedBroker
 	if candidate.MQTTBuiltin {
-		port := candidate.MQTTPort
-		if port <= 0 {
-			port = defaultMQTTPort
-		}
+		port := defaultMQTTPort
 		m.mu.RLock()
 		brk := m.embeddedBroker
 		sameRunningPort := brk != nil && brk.Port() == port
@@ -1131,17 +1152,21 @@ func (m *module) testBroker(override *Settings) (bool, string, string) {
 		if !sameRunningPort {
 			tmp, err := StartEmbeddedBroker(fmt.Sprintf(":%d", port), candidate.MQTTUsername, candidate.MQTTPassword)
 			if err != nil {
-				return false, brokerURL, fmt.Sprintf("built-in broker port %d unavailable: %v", port, err)
+				return false, brokerURL, fmt.Sprintf("Port 1883 is already in use on this host (%v). Another MQTT broker appears to be running.", err), ""
 			}
 			defer func() { _ = tmp.Close() }()
+			probeBrk = tmp
 		} else if !sameCreds {
+			probeBrk = brk
 			// Port is already held by our own running embedded broker; test auth on an ephemeral loopback port.
 			tmp, err := StartEmbeddedBroker("127.0.0.1:0", candidate.MQTTUsername, candidate.MQTTPassword)
 			if err != nil {
-				return false, brokerURL, err.Error()
+				return false, brokerURL, err.Error(), ""
 			}
 			defer func() { _ = tmp.Close() }()
 			dialURL = fmt.Sprintf("tcp://127.0.0.1:%d", tmp.Port())
+		} else {
+			probeBrk = brk
 		}
 	}
 
@@ -1159,13 +1184,17 @@ func (m *module) testBroker(override *Settings) (bool, string, string) {
 	tc := mqtt.NewClient(testOpts)
 	tok := tc.Connect()
 	if !tok.WaitTimeout(6 * time.Second) {
-		return false, brokerURL, "connection timed out after 6s"
+		return false, brokerURL, "connection timed out after 6s", ""
 	}
 	if err := tok.Error(); err != nil {
-		return false, brokerURL, err.Error()
+		return false, brokerURL, err.Error(), ""
 	}
 	tc.Disconnect(100)
-	return true, brokerURL, ""
+	warnMsg := ""
+	if probeBrk != nil {
+		warnMsg = m.probeBuiltinBrokerReachability(probeBrk, candidate.MQTTHost)
+	}
+	return true, brokerURL, "", warnMsg
 }
 
 func (m *module) discoverPlugs() {
@@ -2465,6 +2494,7 @@ type settingsResponse struct {
 	MQTTConnected      bool     `json:"mqtt_connected"`
 	MQTTBroker         string   `json:"mqtt_broker,omitempty"`
 	MQTTError          string   `json:"mqtt_error,omitempty"`
+	MQTTWarning        string   `json:"mqtt_warning,omitempty"`
 	MQTTBuiltinRunning bool     `json:"mqtt_builtin_running"`
 	MQTTBuiltinPort    int      `json:"mqtt_builtin_port,omitempty"`
 	MQTTBuiltinClients int      `json:"mqtt_builtin_clients"`
@@ -2476,6 +2506,7 @@ func (m *module) buildSettingsResponse() settingsResponse {
 	up := m.mqttUp
 	broker := m.mqttBroker
 	errMsg := m.mqttError
+	warnMsg := m.mqttWarning
 	brk := m.embeddedBroker
 	m.mu.RUnlock()
 
@@ -2493,6 +2524,7 @@ func (m *module) buildSettingsResponse() settingsResponse {
 		MQTTConnected:      up,
 		MQTTBroker:         broker,
 		MQTTError:          errMsg,
+		MQTTWarning:        warnMsg,
 		MQTTBuiltinRunning: builtinRunning,
 		MQTTBuiltinPort:    builtinPort,
 		MQTTBuiltinClients: builtinClients,
@@ -2666,11 +2698,12 @@ func (m *module) routes() http.Handler {
 				override = &body
 			}
 		}
-		ok, broker, errMsg := m.testBroker(override)
+		ok, broker, errMsg, warnMsg := m.testBroker(override)
 		answer(w, http.StatusOK, map[string]any{
-			"ok":     ok,
-			"broker": broker,
-			"error":  errMsg,
+			"ok":      ok,
+			"broker":  broker,
+			"error":   errMsg,
+			"warning": warnMsg,
 		})
 	})
 

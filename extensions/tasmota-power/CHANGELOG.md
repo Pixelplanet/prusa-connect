@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-11-19
+
+- Hardwire the optional built-in MQTT 3.1.1 broker to TCP port 1883 and warn when an existing MQTT broker or missing Docker `-p 1883:1883` port mapping is detected.
+- Fix **Test Connection** button state when built-in broker mode is active with an empty external host field.
+- Fix dark mode error alert text contrast, prevent German/locale thousands separators on port numbers in status badges, and preserve unsaved printer mode drafts during plug scans.
+- Declare `require.core`, `options`, and `egress` in `module.yaml` and prepare standalone Marketplace build metadata.
+
 ## 0.4.0 - 2026-11-19
 
 - Add optional built-in pure-Go MQTT 3.1/3.1.1 broker (`mqtt_builtin`) in Settings so Tasmota plugs can connect directly without running an external Mosquitto broker.

@@ -3,12 +3,13 @@ title: Tasmota Power Control
 summary: Control and monitor Tasmota smart plugs for printers via MQTT (external or built-in broker) or Direct HTTP, with active-print power-off protection and auto-off after print.
 codeowner: Pixelplanet
 kind: sink
-version: 0.4.0
+version: 0.4.1
 license: MIT
 contract_major: 1
 openapi: openapi.json
 
 require:
+  core: ">=0.1.0-beta.1"
   core-device.get: "*"
   core-device.list: "*"
   core-device.jobs: "*"
@@ -18,6 +19,26 @@ permissions:
 
 needs:
   data: true
+
+options:
+  - key: mqtt_host
+    type: string
+    summary: Hostname or IP address of the MQTT broker.
+  - key: http_host
+    type: string
+    summary: Hostname or IP address of a Tasmota smart plug controlled directly over HTTP.
+
+egress:
+  - option: mqtt_host
+    ports: [1883, 8883]
+    from: process
+    why: Connects to the operator's MQTT broker to monitor and switch Tasmota smart plugs
+    sends: Tasmota power commands and telemetry queries for assigned printer plugs
+  - option: http_host
+    ports: [80, 443]
+    from: process
+    why: Polls and switches a Tasmota smart plug directly over HTTP when no MQTT broker is used
+    sends: Tasmota Status 0 queries and POWER relay commands to the plug's /cm endpoint
 
 platforms:
   - linux_amd64
