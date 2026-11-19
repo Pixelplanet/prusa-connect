@@ -222,7 +222,11 @@
       {:else}
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-2">
-            {#if status.plug?.power === 'ON'}
+            {#if status.plug?.online === false}
+              <Badge variant="destructive">
+                {t('tasmota-power.section.plugOffline')}
+              </Badge>
+            {:else if status.plug?.power === 'ON'}
               <Badge variant="success">
                 {t('tasmota-power.section.plugOn')}
               </Badge>
@@ -240,9 +244,18 @@
               {status.plug?.friendly_name
                 ? `${status.plug.friendly_name} (${status.config.tasmota_topic})`
                 : status.config.tasmota_topic}
+              {#if (status.config.relay_index ?? 1) > 1 || (status.plug?.relay_count ?? 1) > 1}
+                · {t('tasmota-power.section.relayBadge', {
+                  relay: status.config.relay_index ?? 1,
+                })}
+              {/if}
             </span>
 
-            {#if status.plug?.power === 'ON' && status.plug.power_watts !== undefined}
+            {#if status.plug?.online === false}
+              <span class="text-xs text-destructive">
+                {t('tasmota-power.section.plugOfflineHint')}
+              </span>
+            {:else if status.plug?.power === 'ON' && status.plug.power_watts !== undefined}
               <span class="text-xs text-muted-foreground tabular-nums">
                 ·
                 {#if status.plug.voltage !== undefined && status.plug.current_amps !== undefined}
@@ -264,12 +277,12 @@
             <Button
               size="sm"
               variant="default"
-              disabled={busy || status.plug?.power === 'ON'}
+              disabled={busy || status.plug?.online === false || status.plug?.power === 'ON'}
               onclick={() => void handlePower('on')}
             >
               {t('tasmota-power.section.turnOn')}
             </Button>
-            {#if confirmingOff && status.plug?.power !== 'OFF' && status.can_turn_off}
+            {#if confirmingOff && status.plug?.online !== false && status.plug?.power !== 'OFF' && status.can_turn_off}
               <div class="flex items-center gap-1.5 rounded-sm border border-destructive/60 bg-destructive/10 px-2 py-0.5">
                 <span class="text-xs font-medium text-destructive-foreground">
                   {t('tasmota-power.section.confirmOffPrompt')}
@@ -295,7 +308,7 @@
               <Button
                 size="sm"
                 variant="destructive"
-                disabled={busy || !status.can_turn_off || status.plug?.power === 'OFF'}
+                disabled={busy || status.plug?.online === false || !status.can_turn_off || status.plug?.power === 'OFF'}
                 onclick={requestTurnOff}
               >
                 {t('tasmota-power.section.turnOff')}

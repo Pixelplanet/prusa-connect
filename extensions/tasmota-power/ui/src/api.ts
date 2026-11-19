@@ -32,6 +32,7 @@ export interface BrokerTestResult {
 
 export interface DeviceConfig {
   tasmota_topic: string;
+  relay_index?: number;
   auto_off_after_print: boolean;
   cooldown_sec?: number;
 }
@@ -39,11 +40,16 @@ export interface DeviceConfig {
 export interface PlugTelemetry {
   topic?: string;
   friendly_name?: string;
+  model?: string;
+  relay_count?: number;
+  relay_names?: string[];
+  relays?: Record<string, 'ON' | 'OFF' | 'UNKNOWN'>;
   power: 'ON' | 'OFF' | 'UNKNOWN';
   online?: boolean;
   power_watts?: number;
   voltage?: number;
   current_amps?: number;
+  last_error?: string;
   updated_at?: string;
 }
 
