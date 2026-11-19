@@ -10,9 +10,9 @@ export interface TasmotaSettings {
   mqtt_port: number;
   mqtt_tls: boolean;
   mqtt_username: string;
-  mqtt_password?: string;
+  mqtt_password?: string | undefined;
   has_password: boolean;
-  keep_password?: boolean;
+  keep_password?: boolean | undefined;
   mqtt_client_id: string;
   auto_off_cooldown_sec: number;
   confirm_turn_off: boolean;
@@ -22,32 +22,32 @@ export interface SettingsResponse {
   settings: TasmotaSettings;
   mqtt_configured: boolean;
   mqtt_connected: boolean;
-  mqtt_broker?: string;
-  mqtt_error?: string;
-  mqtt_warning?: string;
+  mqtt_broker?: string | undefined;
+  mqtt_error?: string | undefined;
+  mqtt_warning?: string | undefined;
   mqtt_builtin_running: boolean;
-  mqtt_builtin_port?: number;
+  mqtt_builtin_port?: number | undefined;
   mqtt_builtin_clients: number;
 }
 
 export interface BrokerTestResult {
   ok: boolean;
-  broker?: string;
-  error?: string;
-  warning?: string;
+  broker?: string | undefined;
+  error?: string | undefined;
+  warning?: string | undefined;
 }
 
 export interface DeviceConfig {
-  mode?: 'mqtt' | 'http' | '';
+  mode?: 'mqtt' | 'http' | '' | undefined;
   tasmota_topic: string;
-  http_host?: string;
-  http_user?: string;
-  http_password?: string;
-  has_http_password?: boolean;
-  keep_http_password?: boolean;
-  relay_index?: number;
+  http_host?: string | undefined;
+  http_user?: string | undefined;
+  http_password?: string | undefined;
+  has_http_password?: boolean | undefined;
+  keep_http_password?: boolean | undefined;
+  relay_index?: number | undefined;
   auto_off_after_print: boolean;
-  cooldown_sec?: number;
+  cooldown_sec?: number | undefined;
 }
 
 export interface PlugTelemetry {

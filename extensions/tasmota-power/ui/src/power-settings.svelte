@@ -134,8 +134,9 @@
       const topic = cfg?.tasmota_topic ?? '';
       const httpHost = cfg?.http_host ?? '';
       const isHttp = cfg?.mode === 'http' || (Boolean(httpHost) && !topic);
-      if (preserveDrafts && selectedModes[dev.id] !== undefined) {
-        nextModes[dev.id] = selectedModes[dev.id];
+      const existingMode = selectedModes[dev.id];
+      if (preserveDrafts && existingMode !== undefined) {
+        nextModes[dev.id] = existingMode;
         nextSelected[dev.id] = selectedTopics[dev.id] ?? topic;
         nextRelays[dev.id] = selectedRelays[dev.id] || (cfg?.relay_index || 1);
         nextManual[dev.id] = manualTopics[dev.id] ?? topic;
