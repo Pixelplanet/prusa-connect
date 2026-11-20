@@ -235,6 +235,10 @@ export interface PowerStatus {
   printer_moving?: boolean;
   auto_off_pending: boolean;
   auto_off_remaining_sec: number;
+  /** Why the plug could not be turned off after a print. It is tried again. */
+  auto_off_error?: string;
+  /** Why the printer stayed on after its last print: cancelled or failed. */
+  auto_off_kept?: string;
   default_cooldown_sec: number;
   confirm_turn_off?: boolean;
   poll_interval_sec?: number;

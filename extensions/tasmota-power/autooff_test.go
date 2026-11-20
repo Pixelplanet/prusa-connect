@@ -164,3 +164,113 @@ func TestTheWaitRunsOnWhenThePrinterGoesAwayAfterThePrint(t *testing.T) {
 		t.Fatal("a printer that went away after its print stayed on")
 	}
 }
+
+// A printer turns off only after a print that finished. A cancelled or a
+// failed print leaves it on and leaves the choice armed for the next print.
+func TestOnlyAFinishedPrintTurnsThePrinterOff(t *testing.T) {
+	now := time.Now()
+	wait := 2 * time.Minute
+	long := now.Add(24 * time.Hour)
+
+	for name, tc := range map[string]struct {
+		end  printerSafety
+		kept string
+	}{
+		"cancelled, by the printer's state": {printerSafety{Connected: true, PrinterState: "STOPPED", CanTurnOff: true}, "cancelled"},
+		"failed, by the printer's state":    {printerSafety{Connected: true, PrinterState: "ERROR", CanTurnOff: true}, "failed"},
+		"cancelled, by the server's record": {printerSafety{Connected: true, PrinterState: "IDLE", CanTurnOff: true, LastJobID: "job-1", LastJobOutcome: "cancelled"}, "cancelled"},
+		"failed, by the server's record":    {printerSafety{Connected: true, PrinterState: "IDLE", CanTurnOff: true, LastJobID: "job-1", LastJobOutcome: "failed"}, "failed"},
+	} {
+		m := newModule(nil)
+		running := printerPrinting
+		running.JobID = "job-1"
+		m.autoOffDue("p", running, wait, now)
+		if m.autoOffDue("p", tc.end, wait, now) || m.autoOffDue("p", tc.end, wait, long) {
+			t.Fatalf("%s: the printer was turned off", name)
+		}
+		if got := m.trackers["p"].kept; got != tc.kept {
+			t.Fatalf("%s: kept = %q, want %q", name, got, tc.kept)
+		}
+
+		// The retry is a new print, and it finishes.
+		m.autoOffDue("p", running, wait, long)
+		if m.trackers["p"].kept != "" {
+			t.Fatalf("%s: the reason outlived the next print", name)
+		}
+		m.autoOffDue("p", printerFinished, wait, long)
+		if !m.autoOffDue("p", printerFinished, wait, long.Add(wait)) {
+			t.Fatalf("%s: the retry that finished did not turn the printer off", name)
+		}
+	}
+}
+
+func TestAPausedPrintNeverTurnsThePrinterOff(t *testing.T) {
+	m := newModule(nil)
+	now := time.Now()
+	paused := printerSafety{Connected: true, PrinterState: "PAUSED", ActiveJob: true}
+
+	m.autoOffDue("p", printerPrinting, 0, now)
+	for _, later := range []time.Duration{time.Minute, time.Hour, 72 * time.Hour} {
+		if m.autoOffDue("p", paused, 0, now.Add(later)) {
+			t.Fatalf("a print paused for %s turned the printer off", later)
+		}
+	}
+}
+
+// The record of another print says nothing about this one, and a print with
+// no outcome yet is given a moment before it counts as finished.
+func TestAPrintWithNoOutcomeYetIsGivenAMoment(t *testing.T) {
+	m := newModule(nil)
+	now := time.Now()
+	running := printerPrinting
+	running.JobID = "job-2"
+	stale := printerSafety{Connected: true, PrinterState: "IDLE", CanTurnOff: true, LastJobID: "job-1", LastJobOutcome: "finished"}
+
+	m.autoOffDue("p", running, 0, now)
+	if m.autoOffDue("p", stale, 0, now) {
+		t.Fatal("the printer was turned off on the record of an older print")
+	}
+	recorded := stale
+	recorded.LastJobID, recorded.LastJobOutcome = "job-2", "cancelled"
+	if m.autoOffDue("p", recorded, 0, now.Add(5*time.Second)) || m.autoOffDue("p", recorded, 0, now.Add(time.Hour)) {
+		t.Fatal("a print recorded as cancelled a moment later turned the printer off")
+	}
+
+	n := newModule(nil)
+	n.autoOffDue("p", running, 0, now)
+	n.autoOffDue("p", stale, 0, now)
+	if !n.autoOffDue("p", stale, 0, now.Add(outcomeGrace)) {
+		t.Fatal("a print nothing was recorded about never turned the printer off")
+	}
+}
+
+// A print skipped on a printer that turns off by default, and then cancelled,
+// is not used up: the print started in its place is skipped too.
+func TestASkippedPrintThatWasCancelledIsSkippedAgain(t *testing.T) {
+	m := newModule(nil)
+	stopped := printerSafety{Connected: true, PrinterState: "STOPPED", CanTurnOff: true}
+
+	for i, moment := range []printerSafety{printerPrinting, stopped, printerPrinting, printerFinished} {
+		if m.skippedPrintIsOver("p", moment) {
+			t.Fatalf("step %d (%s): the default came back before a print finished", i, moment.PrinterState)
+		}
+	}
+	if !m.skippedPrintIsOver("p", printerPrinting) {
+		t.Fatal("the default did not come back for the print after the one that finished")
+	}
+}
+
+func TestAPlugThatWillNotTurnOffIsReported(t *testing.T) {
+	m := newModule(nil)
+	now := time.Now()
+	m.autoOffDue("p", printerPrinting, 0, now)
+	m.autoOffDue("p", printerFinished, 0, now)
+	m.noteAutoOffFault("p", errBrokerOffline)
+
+	if got := m.trackers["p"].offFault; got != errBrokerOffline.Error() {
+		t.Fatalf("the fault was not kept: %q", got)
+	}
+	if !m.autoOffDue("p", printerFinished, 0, now.Add(time.Minute)) {
+		t.Fatal("the turn-off was not tried again")
+	}
+}
