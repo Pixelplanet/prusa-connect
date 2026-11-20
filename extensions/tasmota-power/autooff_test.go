@@ -111,3 +111,56 @@ func TestSavingAPlugKeepsTheAutoOffDefault(t *testing.T) {
 		t.Fatalf("the default was lost on save: %+v", got)
 	}
 }
+
+// A plug cut by hand ends the print that was followed. The printer turned on
+// again later must not be turned off for a print that is long over.
+func TestAPlugTurnedOffByHandEndsThePrintThatWasFollowed(t *testing.T) {
+	now := time.Now()
+	wait := 2 * time.Minute
+
+	for name, before := range map[string][]printerSafety{
+		"during the wait": {printerPrinting, printerFinished},
+		"mid-print":       {printerPrinting},
+	} {
+		m := newModule(nil)
+		for _, moment := range before {
+			m.autoOffDue("p", moment, wait, now)
+		}
+		m.forgetPrint("p")
+
+		for _, later := range []time.Duration{24 * time.Hour, 24*time.Hour + wait} {
+			if m.autoOffDue("p", printerIdle, wait, now.Add(later)) {
+				t.Fatalf("%s: the printer was turned off again %s later with no new print", name, later)
+			}
+		}
+	}
+
+	m := newModule(nil)
+	cfg := DeviceConfig{Driver: DriverTasmota, TasmotaTopic: "plug_a"}
+	if m.plugIsOff(cfg) {
+		t.Fatal("a plug nothing was heard from counted as off")
+	}
+	plug := &PlugTelemetry{Topic: "plug_a", Power: "OFF"}
+	plug.setRelayState(1, "OFF")
+	m.plugs[cfg.plugKey()] = plug
+	if !m.plugIsOff(cfg) {
+		t.Fatal("a plug that reported OFF did not count as off")
+	}
+}
+
+// A print seen to be over stays over when the printer then goes away.
+func TestTheWaitRunsOnWhenThePrinterGoesAwayAfterThePrint(t *testing.T) {
+	m := newModule(nil)
+	now := time.Now()
+	wait := 2 * time.Minute
+	away := printerSafety{CanTurnOff: true}
+
+	m.autoOffDue("p", printerPrinting, wait, now)
+	m.autoOffDue("p", printerFinished, wait, now)
+	if m.autoOffDue("p", away, wait, now.Add(time.Minute)) {
+		t.Fatal("the plug was due before the wait was over")
+	}
+	if !m.autoOffDue("p", away, wait, now.Add(wait)) {
+		t.Fatal("a printer that went away after its print stayed on")
+	}
+}
