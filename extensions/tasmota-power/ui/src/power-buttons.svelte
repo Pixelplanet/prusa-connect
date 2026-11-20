@@ -77,29 +77,39 @@
   };
 </script>
 
-<div class="flex items-center gap-2" data-part="power-buttons">
-  {#if plugState !== 'on'}
-    <Button
-      size="sm"
-      aria-label={t('power.switch.onOf', { printer })}
-      disabled={busy || unreachable}
-      onclick={() => void send('on')}
-    >
-      {t('power.switch.on')}
-    </Button>
-  {/if}
-  {#if plugState === 'on' || plugState === 'unknown'}
-    <Button
-      size="sm"
-      variant="destructive"
-      aria-label={t('power.switch.offOf', { printer })}
-      disabled={busy || locked}
-      onclick={turnOff}
-    >
-      {t('power.switch.off')}
-    </Button>
-  {/if}
-</div>
+{#if power.mayOperate(deviceId)}
+  <div class="flex items-center gap-2" data-part="power-buttons">
+    {#if plugState !== 'on'}
+      <Button
+        size="sm"
+        aria-label={t('power.switch.onOf', { printer })}
+        disabled={busy || unreachable}
+        onclick={() => void send('on')}
+      >
+        {t('power.switch.on')}
+      </Button>
+    {/if}
+    {#if plugState === 'on' || plugState === 'unknown'}
+      <Button
+        size="sm"
+        variant="destructive"
+        aria-label={t('power.switch.offOf', { printer })}
+        disabled={busy || locked}
+        onclick={turnOff}
+      >
+        {t('power.switch.off')}
+      </Button>
+    {/if}
+  </div>
+{:else}
+  <p
+    class="text-muted-foreground text-xs text-balance"
+    data-part="no-operate"
+    title={t('power.rights.operateNote')}
+  >
+    {t('power.rights.operateShort')}
+  </p>
+{/if}
 
 <AlertDialog
   open={asking}

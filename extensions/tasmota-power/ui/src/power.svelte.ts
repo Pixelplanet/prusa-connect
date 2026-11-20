@@ -55,6 +55,12 @@ export class PowerStore {
   #haEntities = $state.raw<readonly HAEntity[]>([]);
 
   #watchers = 0;
+  /** The minutes each watching graph draws, so the overview carries the longest. */
+  #graphs: number[] = [];
+  /** The minutes of samples the overview held now was read with. */
+  #readWith = $state(0);
+  /** A graph joined while a read without its samples was in flight. */
+  #again = false;
   #timer: ReturnType<typeof setInterval> | undefined;
   #reading = false;
 
@@ -133,11 +139,36 @@ export class PowerStore {
   }
 
   /**
+   * Whether the person may switch this printer's plug, so a screen hides
+   * what they could not use. True until the overview says otherwise; the
+   * process asks again on every switch.
+   */
+  mayOperate(deviceId: string): boolean {
+    return this.#entries[deviceId]?.can_operate !== false;
+  }
+
+  /** Whether the overview held now carries samples for minutes of graph. */
+  carriesGraph(minutes: number): boolean {
+    return this.#overview !== undefined && this.#readWith >= minutes;
+  }
+
+  /** Whether the person may change plugs and connections, true until known. */
+  get mayConfigure(): boolean {
+    return this.#overview?.can_configure !== false;
+  }
+
+  /**
    * Keeps the overview fresh while a screen shows it. A screen calls it when
    * it mounts and calls what it returns when it goes.
    */
-  watch(): () => void {
+  watch(options: { graphMinutes?: number } = {}): () => void {
+    const minutes = Math.max(0, options.graphMinutes ?? 0);
     this.#watchers += 1;
+    if (minutes > 0) {
+      this.#graphs.push(minutes);
+      // A graph that joins a running poll needs its samples now.
+      if (this.#watchers > 1 && minutes > this.#readWith) void this.refresh();
+    }
     if (this.#watchers === 1) {
       void this.refresh();
       this.#timer = setInterval(() => {
@@ -151,21 +182,41 @@ export class PowerStore {
       if (released) return;
       released = true;
       this.#watchers -= 1;
+      if (minutes > 0) {
+        const at = this.#graphs.indexOf(minutes);
+        if (at >= 0) this.#graphs.splice(at, 1);
+      }
       if (this.#watchers === 0) this.#stop();
     };
   }
 
+  /** Whether a graph joined while the last read was in flight. */
+  #joinedDuringRead(): boolean {
+    return this.#again;
+  }
+
   /** Reads the overview again. A read already in flight is not doubled. */
   async refresh(): Promise<void> {
-    if (this.#reading) return;
+    if (this.#reading) {
+      this.#again = true;
+      return;
+    }
     this.#reading = true;
+    this.#again = false;
+    const minutes = Math.max(0, ...this.#graphs);
     try {
-      this.#overview = await this.#api.getOverview();
+      this.#overview = await this.#api.getOverview(minutes);
+      this.#readWith = minutes;
       this.#overviewFault = undefined;
     } catch (thrown) {
       this.#overviewFault = thrown;
     } finally {
       this.#reading = false;
+    }
+    // A graph that joined during the read gets its samples now, not at
+    // the next tick.
+    if (this.#joinedDuringRead() && Math.max(0, ...this.#graphs) > minutes) {
+      void this.refresh();
     }
   }
 

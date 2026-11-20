@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.4 - 2026-11-19
+## 0.5.5 - 2026-11-19
 
 - Add multi-plug driver support inside a single unified extension sharing safety interlocks, auto-off cooldown, 30-minute power graph, and session/print energy tracking:
   - **Shelly Gen1 (MQTT)** with `shellies/announce` discovery, online LWT, overpower detection, and per-relay power readings.
@@ -18,10 +18,14 @@
 - A printer now turns off by itself only after a print that finished. After a cancelled or a failed print it stays on, and a choice made for one print stays armed for the retry. A paused print never turns it off.
 - The printer's page says when the plug could not be turned off after a print, and why the printer stayed on.
 - Fix auto-off cutting the power of a printer that lost its connection during a print. Auto-off now waits until the printer is back and reports the print as over.
-- Add a **Printer power** dashboard card.
+- Add a **Printer power** dashboard card. With room for it, it draws each printer's power over the last 5, 15, 30 or 60 minutes, over the same span the core's temperature card offers, so the two line up. The graph can be switched off in the card's settings. `GET /overview?history=<minutes>` carries the samples, and an hour of samples is kept per printer.
+- Hide what a person may not use: the switch buttons and auto-off switches for a person who may not operate the printer, and the plug set-up links for one who may not configure the extension. The settings tabs say when a person may look but not change. `GET /overview` answers `can_configure` and each printer's `can_operate` for this; the routes still ask the host on every change.
 - Rebuild the printer's **Power Control** section and the listing card line on the app's own components, in light and dark theme. A plug that does not answer is now said on the card instead of leaving the line empty.
 - Read every plug in one request (`GET /overview`), kept to the printers the caller may see, in place of one request per printer card.
 - Declare the built-in MQTT broker's port (`needs.listen`, TCP 1883). **The built-in broker now starts only on a port you approved**: after updating, approve it on the extension's Ports tab if you use the built-in broker. The port can be moved there.
+- Ask the host whether a person may do what a request asks before it changes anything. Switching a plug and the auto-off of a print take `operate_resource` on the extension and `operate` on that printer. Plugs, connections, tests, discovery and the plug list take `configure_resource` on the extension. A person who may not is refused with `FORBIDDEN`, and the actions are declared under `checks` in `module.yaml`.
+- **The built-in MQTT broker now needs a user name and a password**, and it lets in no client that does not sign in with them. After updating, an install whose built-in broker had none stops the broker and says so on the Connections tab: set both there, with **Generate password** if you like, and set the same two values in each plug.
+- This extension's own client reaches the built-in broker in process instead of over a loopback socket, and testing the built-in broker no longer opens a second listener on a random port.
 - Fix a start failure when `http_host` was written on the extension's host Settings tab. A value written there for `mqtt_host` or `ha_url` now fixes that value, and the Connections tab shows it as read-only.
 - Fix a new install starting with an auto-off delay of 0 seconds instead of the default 120.
 - Preserve full backwards compatibility with existing `mode: "mqtt"` and `mode: "http"` printer assignments.

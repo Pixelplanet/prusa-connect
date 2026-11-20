@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.5.4",
+    "version": "0.5.5",
     "description": "Multi-driver smart plug control and energy monitoring per printer (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant)."
   },
   "paths": {
@@ -10,20 +10,26 @@
       "get": {
         "operationId": "get-tasmota-settings",
         "summary": "Get the connection settings and their live state",
-        "description": "Returns the MQTT broker and Home Assistant settings with secrets left out, whether each connection is up, the state of the built-in broker and whether its port is granted, and which values are pinned by the host's own settings.",
+        "description": "Returns the MQTT broker and Home Assistant settings with secrets left out, whether each connection is up, the state of the built-in broker and whether its port is granted, and which values are pinned by the host's own settings. The host takes view_resource on the module before this is called.",
         "responses": {
           "200": {
             "description": "Current MQTT settings and broker status"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       },
       "put": {
         "operationId": "put-tasmota-settings",
         "summary": "Save the settings and reconnect",
-        "description": "Replaces the whole settings object in settings.json and reconnects the MQTT broker. A value pinned in the host's own settings is kept as pinned.",
+        "description": "Replaces the whole settings object in settings.json and reconnects the MQTT broker. A value pinned in the host's own settings is kept as pinned. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource. A caller who does not is refused with FORBIDDEN (403).",
         "responses": {
           "200": {
             "description": "Updated MQTT settings and broker status"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -32,10 +38,13 @@
       "post": {
         "operationId": "test-broker-connection",
         "summary": "Test MQTT broker connectivity",
-        "description": "Tests connecting to the provided (or saved) external or built-in MQTT broker settings and returns whether the connection succeeded or the exact error. The built-in broker is tested on the port the operator granted.",
+        "description": "Tests connecting to the provided (or saved) external or built-in MQTT broker settings and returns whether the connection succeeded or the exact error. The built-in broker is tested on the port the operator granted. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource. A caller who does not is refused with FORBIDDEN (403).",
         "responses": {
           "200": {
             "description": "MQTT broker test result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -44,10 +53,13 @@
       "post": {
         "operationId": "test-ha-connection",
         "summary": "Test Home Assistant REST connectivity and list switch/power entities",
-        "description": "Tests connecting to the provided (or saved) Home Assistant URL and Long-Lived Access Token via GET /api/ and returns discovered switch, input_boolean, and power sensor entities.",
+        "description": "Tests connecting to the provided (or saved) Home Assistant URL and Long-Lived Access Token via GET /api/ and returns discovered switch, input_boolean, and power sensor entities. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource. A caller who does not is refused with FORBIDDEN (403).",
         "responses": {
           "200": {
             "description": "Home Assistant test result and entity list"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -56,10 +68,13 @@
       "post": {
         "operationId": "discover-tasmota-plugs",
         "summary": "Ask the MQTT broker which plugs are there",
-        "description": "Queries the broker for Tasmota and Shelly Gen1 plugs and returns every plug found.",
+        "description": "Queries the broker for Tasmota and Shelly Gen1 plugs and returns every plug found. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource. A caller who does not is refused with FORBIDDEN (403).",
         "responses": {
           "200": {
             "description": "List of discovered Tasmota plugs"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -68,10 +83,13 @@
       "get": {
         "operationId": "get-plug-assignments",
         "summary": "List every printer's plug and the plugs the broker found",
-        "description": "Returns each printer's saved plug, the plugs the broker found, the Home Assistant entities, and the state of both connections.",
+        "description": "Returns each printer's saved plug, the plugs the broker found, the Home Assistant entities, and the state of both connections. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource. A caller who does not is refused with FORBIDDEN (403).",
         "responses": {
           "200": {
             "description": "All printer plug assignments and discovered plugs"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -80,7 +98,7 @@
       "get": {
         "operationId": "get-power-overview",
         "summary": "List every printer's plug and what it draws now",
-        "description": "Returns, for every printer the caller may see that has a plug or an auto-off choice, the saved plug with secrets left out, its live state and readings, and the energy since it was turned on. It reads memory only, so one request serves a whole list of printers.",
+        "description": "Returns, for every printer the caller may see that has a plug or an auto-off choice, the saved plug with secrets left out, its live state and readings, and the energy since it was turned on. It reads memory only, so one request serves a whole list of printers. can_configure and each printer's can_operate say what the caller may change, for what a page offers; each answer is kept for 30 seconds, and the routes ask again. The host takes view_resource on the module before this is called.",
         "responses": {
           "200": {
             "description": "Every visible printer's plug, and the state of both connections",
@@ -91,15 +109,30 @@
                 }
               }
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "history",
+            "in": "query",
+            "required": false,
+            "description": "Minutes of power samples each printer carries, for a graph: 1 to 60, larger values are read as 60. Without it, no samples.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
       }
     },
     "/devices/{device_id}": {
       "get": {
         "operationId": "get-device-power",
         "summary": "Get one printer's plug, its live state, its power graph and its safety lock",
-        "description": "Returns the printer's saved plug, live relay and power readings, rolling power graph samples, session and per-print energy totals, the active-print safety lock, and the auto-off countdown.",
+        "description": "Returns the printer's saved plug, live relay and power readings, rolling power graph samples, session and per-print energy totals, the active-print safety lock, and the auto-off countdown. The host takes view_resource on the module before this is called.",
         "parameters": [
           {
             "name": "device_id",
@@ -120,6 +153,9 @@
                 }
               }
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -128,7 +164,7 @@
       "put": {
         "operationId": "put-device-power-config",
         "summary": "Save one printer's plug and its auto-off choices",
-        "description": "Saves the driver, the plug's address (an MQTT topic, an IP address or host, a Home Assistant entity, or custom MQTT topics), the relay, the auto-off-after-print flag, and an optional delay of the printer's own. Answers 409 when another printer already has that plug and relay.",
+        "description": "Saves the driver, the plug's address (an MQTT topic, an IP address or host, a Home Assistant entity, or custom MQTT topics), the relay, the auto-off-after-print flag, and an optional delay of the printer's own. Answers 409 when another printer already has that plug and relay. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds configure_resource, and operate on the printer. A caller who does not is refused with FORBIDDEN (403).",
         "parameters": [
           {
             "name": "device_id",
@@ -142,6 +178,9 @@
         "responses": {
           "200": {
             "description": "Updated device power plug status"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -150,7 +189,7 @@
       "post": {
         "operationId": "post-device-power",
         "summary": "Turn a printer's plug on or off",
-        "description": "Switches the plug through its driver and verifies the resulting state. Refuses OFF, and a TOGGLE that would turn off, with 409 Conflict while the printer is printing or busy.",
+        "description": "Switches the plug through its driver and verifies the resulting state. Refuses OFF, and a TOGGLE that would turn off, with 409 Conflict while the printer is printing or busy. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds operate_resource and operate on the printer. A caller who does not is refused with FORBIDDEN (403).",
         "parameters": [
           {
             "name": "device_id",
@@ -164,6 +203,9 @@
         "responses": {
           "200": {
             "description": "Command sent and updated plug status"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -172,7 +214,7 @@
       "post": {
         "operationId": "post-device-auto-off",
         "summary": "Choose whether a printer turns off after a print",
-        "description": "With enabled alone, arms or disarms turning off after the print that runs now or the next one; the printer then goes back to its default. With default as well, sets whether the printer turns off after every print.",
+        "description": "With enabled alone, arms or disarms turning off after the print that runs now or the next one; the printer then goes back to its default. With default as well, sets whether the printer turns off after every print. The host takes view_resource on the module before this is called, and the module asks the host whether the caller holds operate_resource and operate on the printer. A caller who does not is refused with FORBIDDEN (403).",
         "parameters": [
           {
             "name": "device_id",
@@ -186,6 +228,9 @@
         "responses": {
           "200": {
             "description": "Updated device power plug status"
+          },
+          "default": {
+            "$ref": "#/components/responses/Refused"
           }
         }
       }
@@ -358,6 +403,17 @@
           },
           "current_print_usage": {
             "$ref": "#/components/schemas/PrintPowerRecord"
+          },
+          "power_history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PowerSample"
+            },
+            "description": "The power samples of the minutes ?history= asks for. An empty list when asked and there are none; absent when not asked."
+          },
+          "can_operate": {
+            "type": "boolean",
+            "description": "Whether the caller may switch this printer's plug."
           }
         }
       },
@@ -390,6 +446,48 @@
           },
           "poll_interval_sec": {
             "type": "integer"
+          },
+          "can_configure": {
+            "type": "boolean",
+            "description": "Whether the caller may change plugs and connections."
+          }
+        }
+      },
+      "Refusal": {
+        "type": "object",
+        "description": "One refusal, as RFC 9457 names it.",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "description": "The HTTP status, repeated in the body."
+          },
+          "code": {
+            "type": "string",
+            "description": "The fault code: ROUTE_NOT_FOUND, INVALID_INPUT, NOT_CONFIGURED, PRINTER_BUSY, BROKER_OFFLINE, PLUG_REFUSED, TOPIC_ALREADY_ASSIGNED, NO_PRINCIPAL, FORBIDDEN, ACCESS_UNKNOWN, CHECKS_NOT_APPROVED or INTERNAL_ERROR, in this module's fault domain."
+          },
+          "title": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "Refused": {
+        "description": "The module refused the call. The code says which rule it met.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Refusal"
+            }
           }
         }
       }

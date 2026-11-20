@@ -32,6 +32,7 @@
     transportOf,
   } from '../drivers';
   import FaultNote from '../fault-note.svelte';
+  import RightsNote from '../rights-note.svelte';
   import { formatWatts } from '../format';
   import { heldHost } from '../host';
   import LinkButton from '../link-button.svelte';
@@ -148,6 +149,7 @@
       </Alert>
     {/if}
 
+    <RightsNote />
     <FaultNote fault={fault ?? power.assignmentsFault ?? host.fleet.error} />
 
     {#if reading}

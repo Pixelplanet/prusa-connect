@@ -26,6 +26,7 @@
   import { type DeviceConfig, isDeviceConfigured } from '../api';
   import { withAutoOff } from '../drivers';
   import FaultNote from '../fault-note.svelte';
+  import RightsNote from '../rights-note.svelte';
   import { formatSpan } from '../format';
   import { heldHost } from '../host';
   import { typed, wholeOf } from '../input';
@@ -156,6 +157,7 @@
 </script>
 
 <div class="flex flex-col gap-6">
+  <RightsNote />
   <form onsubmit={(event) => void saveRules(event)} data-part="rules">
     <SettingsPane
       title={t('power.automation.rules.title')}
@@ -258,7 +260,8 @@
                         printer: name,
                       })}
                       checked={config.auto_off_default === true}
-                      disabled={busyPrinter === printer.id}
+                      disabled={busyPrinter === printer.id ||
+                        !power.mayOperate(printer.id)}
                       onCheckedChange={(next: boolean) =>
                         void change(printer.id, () =>
                           power.setAutoOff(printer.id, next, true),

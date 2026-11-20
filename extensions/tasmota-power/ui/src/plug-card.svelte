@@ -19,6 +19,7 @@
   import PlugBadge from './plug-badge.svelte';
   import { artworkOf, plugLineOf } from './plug-line';
   import PowerButtons from './power-buttons.svelte';
+  import { powerFor } from './power.svelte';
   import type { PlugListRow } from './summary';
 
   let {
@@ -37,7 +38,9 @@
     onfault: (thrown: unknown) => void;
   } = $props();
 
-  const t = heldHost().t;
+  const host = heldHost();
+  const t = host.t;
+  const power = powerFor(host);
   const uid = $props.id();
 
   const config = $derived(row.entry?.config);
@@ -104,7 +107,7 @@
         <Switch
           id={`${uid}-default`}
           checked={config?.auto_off_default === true}
-          disabled={busy}
+          disabled={busy || !power.mayOperate(row.id)}
           onCheckedChange={ondefault}
         />
         <Label for={`${uid}-default`} variant="option">

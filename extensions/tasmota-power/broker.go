@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -62,10 +63,10 @@ type EmbeddedBroker struct {
 }
 
 type brokerClient struct {
-	broker   *EmbeddedBroker
-	conn     net.Conn
-	reader   *bufio.Reader
-	id       string
+	broker    *EmbeddedBroker
+	conn      net.Conn
+	reader    *bufio.Reader
+	id        string
 	keepAlive time.Duration
 
 	willTopic   string
@@ -85,8 +86,17 @@ type brokerClient struct {
 	graceful  atomic.Bool
 }
 
-// StartEmbeddedBroker binds a TCP listener on listenAddr and serves MQTT 3.1/3.1.1 clients.
+// errBrokerNeedsCredentials refuses a built-in broker without a user name
+// and a password: it would let anyone on the network switch the plugs.
+var errBrokerNeedsCredentials = errors.New("the built-in broker needs a user name and a password")
+
+// StartEmbeddedBroker binds a TCP listener on listenAddr and serves MQTT
+// 3.1/3.1.1 clients that sign in with username and password. It refuses to
+// start without both, so the broker never accepts an anonymous client.
 func StartEmbeddedBroker(listenAddr, username, password string) (*EmbeddedBroker, error) {
+	if strings.TrimSpace(username) == "" || password == "" {
+		return nil, errBrokerNeedsCredentials
+	}
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, err
@@ -129,6 +139,33 @@ func (b *EmbeddedBroker) ClientCount() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.clients)
+}
+
+// Pipe connects a client in this process to the broker over an in-memory
+// pipe. The module's own MQTT client uses it, so it reaches the built-in
+// broker without opening a socket. The client signs in like any other.
+func (b *EmbeddedBroker) Pipe() (net.Conn, error) {
+	if b == nil {
+		return nil, net.ErrClosed
+	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	b.wg.Add(1)
+	b.mu.Unlock()
+
+	server, client := net.Pipe()
+	go b.handleConn(server)
+	return client, nil
+}
+
+// signsIn answers whether username and password are the broker's own.
+func (b *EmbeddedBroker) signsIn(username, password string) bool {
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(b.username)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(b.password)) == 1
+	return userOK && passOK
 }
 
 // AcceptedCount returns the total number of TCP connections accepted by this broker listener.
@@ -330,10 +367,10 @@ func (b *EmbeddedBroker) parseConnect(conn net.Conn, reader *bufio.Reader, body 
 		pos += n
 	}
 
-	if b.username != "" || b.password != "" {
-		if !userFlag || user != b.username || pass != b.password {
-			return nil, 0x04 // bad username or password
-		}
+	// Every client signs in. StartEmbeddedBroker refuses a broker without
+	// a user name and a password, so there is no anonymous case.
+	if !userFlag || !passFlag || !b.signsIn(user, pass) {
+		return nil, 0x04 // bad username or password
 	}
 
 	c := &brokerClient{

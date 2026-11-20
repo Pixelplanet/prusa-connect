@@ -23,6 +23,7 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/prusa3d/prusa-connect/sdk/accessapi"
 	"github.com/prusa3d/prusa-connect/sdk/deviceapi"
 	"github.com/prusa3d/prusa-connect/sdk/extension"
 	"github.com/prusa3d/prusa-connect/sdk/fault"
@@ -34,7 +35,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.5.4")
+	release = extension.Version("0.5.5")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -44,8 +45,10 @@ const (
 	configsFileName     = "configs.json"
 	settingsFileName    = "settings.json"
 	usageFileName       = "usage.json"
-	maxPowerSamples     = 360
-	maxPrintHistory     = 10
+	// maxPowerSamples caps the samples kept per printer: an hour at one
+	// sample every two seconds, the shortest step between two samples.
+	maxPowerSamples = 1800
+	maxPrintHistory = 10
 )
 
 //go:embed openapi.json
@@ -162,22 +165,23 @@ func parseBrokerURL(raw string) (host string, port int, useTLS bool) {
 	if b == "" {
 		return "", 0, false
 	}
-	if !strings.Contains(b, "://") {
-		b = "tcp://" + b
+	// The scheme, when one was written, says only whether TLS is wanted.
+	if scheme, rest, found := strings.Cut(b, "://"); found {
+		scheme = strings.ToLower(scheme)
+		useTLS = scheme == "ssl" || scheme == "tls" || scheme == "mqtts"
+		b = rest
 	}
-	u, err := url.Parse(b)
-	if err != nil {
-		return strings.TrimSpace(raw), 0, false
+	b, _, _ = strings.Cut(b, "/")
+	if at := strings.LastIndex(b, "@"); at >= 0 {
+		b = b[at+1:]
 	}
-	scheme := strings.ToLower(u.Scheme)
-	useTLS = scheme == "ssl" || scheme == "tls" || scheme == "mqtts"
-	h := u.Hostname()
-	if pStr := u.Port(); pStr != "" {
-		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
-			port = p
+	if h, p, err := net.SplitHostPort(b); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			port = n
 		}
+		return h, port, useTLS
 	}
-	return h, port, useTLS
+	return strings.Trim(b, "[]"), 0, useTLS
 }
 
 func (s Settings) mqttConfigured() bool {
@@ -188,15 +192,40 @@ func (s Settings) haConfigured() bool {
 	return normalizeBaseURL(s.HAURL) != "" && strings.TrimSpace(s.HAToken) != ""
 }
 
-// brokerURL is the address this module's own MQTT client dials. For the
-// built-in broker that is the loopback address on the port the operator
-// granted, and empty while no port is granted.
-func (s Settings) brokerURL(builtinPort int) string {
+// builtinCredentialsSet answers whether the built-in broker has the user name
+// and password it needs to start.
+func (s Settings) builtinCredentialsSet() bool {
+	return strings.TrimSpace(s.MQTTUsername) != "" && s.MQTTPassword != ""
+}
+
+// errBuiltinNeedsCredentials is what the settings say while the built-in
+// broker is switched on without a user name and a password.
+const errBuiltinNeedsCredentials = "The built-in broker needs a user name and a password, so that only your plugs can sign in to it. Set both on the Connections tab, then set the same values in each plug."
+
+// inProcessBroker names the built-in broker in this module's MQTT client. The
+// client never dials it: its connection function opens a pipe into the broker
+// in this process (EmbeddedBroker.Pipe), so no socket is opened.
+const inProcessBroker = "built-in-broker"
+
+// builtinLabel is how the settings name the built-in broker.
+func builtinLabel(port int) string {
+	return fmt.Sprintf("built-in broker on port %d", port)
+}
+
+// pipeInto makes an MQTT client reach brk in process.
+func pipeInto(opts *mqtt.ClientOptions, brk *EmbeddedBroker) *mqtt.ClientOptions {
+	return opts.SetCustomOpenConnectionFn(func(*url.URL, mqtt.ClientOptions) (net.Conn, error) {
+		return brk.Pipe()
+	})
+}
+
+// brokerURL is the address of the external broker the operator set, which
+// this module's MQTT client dials: the mqtt_host option or the host on the
+// Connections tab. It is empty for the built-in broker, which is reached in
+// process.
+func (s Settings) brokerURL() string {
 	if s.MQTTBuiltin {
-		if builtinPort <= 0 {
-			return ""
-		}
-		return fmt.Sprintf("tcp://%s", net.JoinHostPort("127.0.0.1", strconv.Itoa(builtinPort)))
+		return ""
 	}
 	host := strings.TrimSpace(s.MQTTHost)
 	if host == "" {
@@ -255,9 +284,9 @@ type DeviceConfig struct {
 	// AutoOffAfterPrint says whether the plug turns off after the print that
 	// runs now, or the next one. AutoOffDefault is what it goes back to once
 	// that print is over: a printer that turns off after every print has both.
-	AutoOffAfterPrint     bool   `json:"auto_off_after_print"`
-	AutoOffDefault        bool   `json:"auto_off_default,omitempty"`
-	CooldownSec           *int   `json:"cooldown_sec,omitempty"`
+	AutoOffAfterPrint bool `json:"auto_off_after_print"`
+	AutoOffDefault    bool `json:"auto_off_default,omitempty"`
+	CooldownSec       *int `json:"cooldown_sec,omitempty"`
 }
 
 func (c DeviceConfig) relayIndex() int {
@@ -640,6 +669,14 @@ type DeviceUsage struct {
 
 type module struct {
 	devices *deviceapi.Client
+	// access is the host's access.check, asked before a route changes
+	// anything (access.go).
+	access accessChecker
+	// hints keeps the answers that only decide what a page offers.
+	hints hintCache
+	// principal reads the person a request is for. It is nil outside tests,
+	// which read it with routesapi.PrincipalOf.
+	principal func(*http.Request) string
 
 	held atomic.Pointer[Settings]
 
@@ -672,6 +709,7 @@ type module struct {
 func newModule(conn *wirerpc.Conn) *module {
 	m := &module{
 		devices:    deviceapi.NewClient(conn),
+		access:     accessapi.NewClient(conn),
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 		plugs:      make(map[string]*PlugTelemetry),
 		configs:    make(map[string]DeviceConfig),
@@ -1018,9 +1056,7 @@ func (m *module) loadAllUsage() {
 		if u == nil {
 			continue
 		}
-		if len(u.History) > maxPowerSamples {
-			u.History = u.History[len(u.History)-maxPowerSamples:]
-		}
+		u.History = trimHistory(u.History, time.Now(), powerHistoryKeep)
 		if len(u.PrintHistory) > maxPrintHistory {
 			u.PrintHistory = u.PrintHistory[:maxPrintHistory]
 		}
@@ -1282,6 +1318,11 @@ func (m *module) buildMQTTOptions(s Settings, brokerURL, clientID string) *mqtt.
 	return opts
 }
 
+// probeBuiltinBrokerReachability checks, while the built-in broker runs, that
+// the address the operator gave plugs for this server reaches it. That address
+// is the broker host on the Connections tab, or the mqtt_host option, which
+// module.yaml declares under egress. It opens one TCP connection to that host
+// on the granted broker port and closes it again, sending nothing.
 func (m *module) probeBuiltinBrokerReachability(brk *EmbeddedBroker, rawHost string) string {
 	if brk == nil {
 		return ""
@@ -1307,9 +1348,13 @@ func (m *module) probeBuiltinBrokerReachability(brk *EmbeddedBroker, rawHost str
 func (m *module) reconnectMQTT(s Settings) {
 	m.disconnectMQTT()
 	port := m.grantedBuiltinPort()
-	brokerURL := s.brokerURL(port)
+	brokerURL := s.brokerURL()
+	label := brokerURL
+	if s.MQTTBuiltin && port > 0 {
+		label = builtinLabel(port)
+	}
 	m.mu.Lock()
-	m.mqttBroker = brokerURL
+	m.mqttBroker = label
 	m.mqttError = ""
 	m.mqttWarning = ""
 	m.mu.Unlock()
@@ -1322,6 +1367,13 @@ func (m *module) reconnectMQTT(s Settings) {
 			m.mqttError = errMsg
 			m.mu.Unlock()
 			fmt.Fprintf(os.Stderr, "%s: %s\n", logName, errMsg)
+			return
+		}
+		if !s.builtinCredentialsSet() {
+			m.mu.Lock()
+			m.mqttError = errBuiltinNeedsCredentials
+			m.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "%s: %s\n", logName, errBuiltinNeedsCredentials)
 			return
 		}
 		listenAddr := fmt.Sprintf(":%d", port)
@@ -1346,13 +1398,20 @@ func (m *module) reconnectMQTT(s Settings) {
 		}
 	}
 
-	if brokerURL == "" {
-		return
+	var opts *mqtt.ClientOptions
+	if s.MQTTBuiltin {
+		m.mu.RLock()
+		brk := m.embeddedBroker
+		m.mu.RUnlock()
+		opts = pipeInto(m.buildMQTTOptions(s, inProcessBroker, s.MQTTClientID), brk)
+	} else {
+		if brokerURL == "" {
+			return
+		}
+		opts = m.buildMQTTOptions(s, brokerURL, s.MQTTClientID)
 	}
 
-	fmt.Fprintf(os.Stderr, "%s: connecting to MQTT broker %s (client_id=%s)\n", logName, brokerURL, s.MQTTClientID)
-
-	opts := m.buildMQTTOptions(s, brokerURL, s.MQTTClientID)
+	fmt.Fprintf(os.Stderr, "%s: connecting to MQTT broker %s (client_id=%s)\n", logName, label, s.MQTTClientID)
 
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		m.mu.Lock()
@@ -1384,7 +1443,7 @@ func (m *module) reconnectMQTT(s Settings) {
 			m.syncDriverSubscriptions()
 			m.queryAllKnownPlugs()
 		}()
-		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", logName, brokerURL)
+		fmt.Fprintf(os.Stderr, "%s: connected to MQTT broker %s\n", logName, label)
 	})
 
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
@@ -1398,7 +1457,7 @@ func (m *module) reconnectMQTT(s Settings) {
 	})
 
 	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
-		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", logName, brokerURL)
+		fmt.Fprintf(os.Stderr, "%s: retrying MQTT connection to %s\n", logName, label)
 	})
 
 	client := mqtt.NewClient(opts)
@@ -1445,70 +1504,81 @@ func (m *module) testBroker(override *Settings) (bool, string, string, string) {
 		candidate = m.applyHostPins(candidate)
 	}
 
-	port := m.grantedBuiltinPort()
-	brokerURL := candidate.brokerURL(port)
+	if candidate.MQTTBuiltin {
+		return m.testBuiltinBroker(candidate)
+	}
+
+	brokerURL := candidate.brokerURL()
 	if brokerURL == "" {
-		if candidate.MQTTBuiltin {
-			return false, "", "The built-in broker's port is not approved. Approve it on the Ports tab of this extension.", ""
-		}
 		return false, "", "Broker host is required", ""
 	}
-
-	dialURL := brokerURL
-	var probeBrk *EmbeddedBroker
-	if candidate.MQTTBuiltin {
-		m.mu.RLock()
-		brk := m.embeddedBroker
-		sameRunningPort := brk != nil && brk.Port() == port
-		m.mu.RUnlock()
-
-		sameCreds := saved.MQTTBuiltin && saved.MQTTUsername == candidate.MQTTUsername && saved.MQTTPassword == candidate.MQTTPassword
-		if !sameRunningPort {
-			tmp, err := StartEmbeddedBroker(fmt.Sprintf(":%d", port), candidate.MQTTUsername, candidate.MQTTPassword)
-			if err != nil {
-				return false, brokerURL, fmt.Sprintf("Port %d is already in use on this host (%v). Another MQTT broker appears to be running.", port, err), ""
-			}
-			defer func() { _ = tmp.Close() }()
-			probeBrk = tmp
-		} else if !sameCreds {
-			probeBrk = brk
-			// Port is already held by our own running embedded broker; test auth on an ephemeral loopback port.
-			tmp, err := StartEmbeddedBroker("127.0.0.1:0", candidate.MQTTUsername, candidate.MQTTPassword)
-			if err != nil {
-				return false, brokerURL, err.Error(), ""
-			}
-			defer func() { _ = tmp.Close() }()
-			dialURL = fmt.Sprintf("tcp://127.0.0.1:%d", tmp.Port())
-		} else {
-			probeBrk = brk
-		}
-	}
-
-	testOpts := mqtt.NewClientOptions().
-		AddBroker(dialURL).
-		SetClientID(fmt.Sprintf("%s-test-%d", candidate.MQTTClientID, time.Now().UnixNano()%10000)).
-		SetConnectTimeout(5 * time.Second).
-		SetAutoReconnect(false).
-		SetConnectRetry(false)
-	if candidate.MQTTUsername != "" {
-		testOpts.SetUsername(candidate.MQTTUsername)
-		testOpts.SetPassword(candidate.MQTTPassword)
-	}
-
-	tc := mqtt.NewClient(testOpts)
-	tok := tc.Connect()
-	if !tok.WaitTimeout(6 * time.Second) {
-		return false, brokerURL, "connection timed out after 6s", ""
-	}
-	if err := tok.Error(); err != nil {
+	if err := tryConnect(m.buildMQTTOptions(candidate, brokerURL, testClientID(candidate))); err != nil {
 		return false, brokerURL, err.Error(), ""
 	}
-	tc.Disconnect(100)
-	warnMsg := ""
-	if probeBrk != nil {
-		warnMsg = m.probeBuiltinBrokerReachability(probeBrk, candidate.MQTTHost)
+	return true, brokerURL, "", ""
+}
+
+// testBuiltinBroker tests the built-in broker without listening anywhere but
+// on the port the operator granted. While the broker runs it is asked in
+// process; while it does not, it is started on that port for the test.
+func (m *module) testBuiltinBroker(candidate Settings) (bool, string, string, string) {
+	port := m.grantedBuiltinPort()
+	if port <= 0 {
+		return false, "", "The built-in broker's port is not approved. Approve it on the Ports tab of this extension.", ""
 	}
-	return true, brokerURL, "", warnMsg
+	label := builtinLabel(port)
+	if !candidate.builtinCredentialsSet() {
+		return false, label, errBuiltinNeedsCredentials, ""
+	}
+
+	m.mu.RLock()
+	brk := m.embeddedBroker
+	m.mu.RUnlock()
+
+	warnMsg := ""
+	if brk == nil || brk.Port() != port {
+		tmp, err := StartEmbeddedBroker(fmt.Sprintf(":%d", port), candidate.MQTTUsername, candidate.MQTTPassword)
+		if err != nil {
+			return false, label, fmt.Sprintf("Port %d is already in use on this host (%v). Another MQTT broker appears to be running.", port, err), ""
+		}
+		defer func() { _ = tmp.Close() }()
+		brk = tmp
+	} else if !brk.signsIn(candidate.MQTTUsername, candidate.MQTTPassword) {
+		// The broker that runs keeps the saved user name and password until
+		// the new ones are saved, so the test signs in with those.
+		warnMsg = "The built-in broker runs with the saved user name and password. Save to use the new ones, and set them in each plug too."
+		candidate.MQTTUsername, candidate.MQTTPassword = brk.username, brk.password
+	}
+
+	opts := pipeInto(m.buildMQTTOptions(candidate, inProcessBroker, testClientID(candidate)), brk)
+	if err := tryConnect(opts); err != nil {
+		return false, label, err.Error(), ""
+	}
+	if reach := m.probeBuiltinBrokerReachability(brk, candidate.MQTTHost); reach != "" {
+		warnMsg = strings.TrimSpace(warnMsg + " " + reach)
+	}
+	return true, label, "", warnMsg
+}
+
+// testClientID is the client id of a test connection, apart from the module's
+// own so the test does not push that client off the broker.
+func testClientID(s Settings) string {
+	return fmt.Sprintf("%s-test-%d", s.MQTTClientID, time.Now().UnixNano()%10000)
+}
+
+// tryConnect connects once with opts and disconnects again.
+func tryConnect(opts *mqtt.ClientOptions) error {
+	opts.SetConnectTimeout(5 * time.Second).SetAutoReconnect(false).SetConnectRetry(false)
+	tc := mqtt.NewClient(opts)
+	tok := tc.Connect()
+	if !tok.WaitTimeout(6 * time.Second) {
+		return errors.New("connection timed out after 6s")
+	}
+	if err := tok.Error(); err != nil {
+		return err
+	}
+	tc.Disconnect(100)
+	return nil
 }
 
 func (m *module) discoverPlugs() {
@@ -2664,9 +2734,7 @@ func (m *module) updateDeviceUsage(deviceID string, cfg DeviceConfig, safety pri
 			Timestamp: now.Unix(),
 			Watts:     math.Round(watts*10) / 10,
 		})
-		if len(u.History) > maxPowerSamples {
-			u.History = u.History[len(u.History)-maxPowerSamples:]
-		}
+		u.History = trimHistory(u.History, now, powerHistoryKeep)
 	}
 
 	if plugOn {
@@ -3117,14 +3185,44 @@ func (m *module) buildSettingsResponse() settingsResponse {
 	}
 }
 
+// powerHistoryKeep is how far back the power samples of a printer reach: the
+// longest span the dashboard card draws, the same as the core's temperature
+// card. statusHistoryWindow is what the printer's own page draws.
+const (
+	powerHistoryKeep    = 60 * time.Minute
+	statusHistoryWindow = 30 * time.Minute
+)
+
+// trimHistory drops the samples older than keep before now, and the oldest
+// beyond maxPowerSamples.
+func trimHistory(history []PowerSample, now time.Time, keep time.Duration) []PowerSample {
+	since := now.Add(-keep).Unix()
+	first := 0
+	for first < len(history) && history[first].Timestamp < since {
+		first++
+	}
+	history = history[first:]
+	if len(history) > maxPowerSamples {
+		history = history[len(history)-maxPowerSamples:]
+	}
+	return history
+}
+
 // overviewEntry is one printer's plug in the fleet overview: what a list of
-// every printer shows, without the graph samples and the print history.
+// every printer shows. The graph samples come only when asked for, and the
+// print history never.
 type overviewEntry struct {
 	DeviceID          string            `json:"device_id"`
 	Config            DeviceConfig      `json:"config"`
 	Plug              *PlugTelemetry    `json:"plug,omitempty"`
 	SessionUsage      *PowerSession     `json:"session_usage,omitempty"`
 	CurrentPrintUsage *PrintPowerRecord `json:"current_print_usage,omitempty"`
+	// PowerHistory is the samples of the last minutes ?history= names, at
+	// most an hour. It is an empty list, never left out, when asked for.
+	PowerHistory *[]PowerSample `json:"power_history,omitempty"`
+	// CanOperate says whether the caller may switch this printer's plug. It
+	// only decides what the page offers: the routes ask again.
+	CanOperate bool `json:"can_operate"`
 }
 
 type overviewResponse struct {
@@ -3136,6 +3234,31 @@ type overviewResponse struct {
 	DefaultCooldownSec int             `json:"default_cooldown_sec"`
 	ConfirmTurnOff     bool            `json:"confirm_turn_off"`
 	PollIntervalSec    int             `json:"poll_interval_sec"`
+	// CanConfigure says whether the caller may change plugs and
+	// connections. It only decides what the page offers.
+	CanConfigure bool `json:"can_configure"`
+}
+
+// historyAsked reads ?history=, the minutes of samples a graph draws, clamped
+// to powerHistoryKeep. Anything else, or nothing, asks for none.
+func historyAsked(raw string) time.Duration {
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes <= 0 {
+		return 0
+	}
+	asked := time.Duration(minutes) * time.Minute
+	return min(asked, powerHistoryKeep)
+}
+
+// overviewOptions is what a caller of buildOverview asks for beyond the plugs.
+type overviewOptions struct {
+	// visible answers whether the caller may see a printer.
+	visible func(deviceID string) bool
+	// history adds each printer's samples of the last history, none when 0.
+	history time.Duration
+	// canOperate answers whether the caller may switch a printer's plug;
+	// nil answers no.
+	canOperate func(deviceID string) bool
 }
 
 // plugSnapshotLocked is the plug a printer's config points at, with the state
@@ -3170,20 +3293,31 @@ func (m *module) plugSnapshotLocked(cfg DeviceConfig) *PlugTelemetry {
 // buildOverview answers every printer that has a plug or an auto-off setting,
 // kept to the printers visible answers true for. It reads memory only, so one
 // request serves a whole list of printers.
-func (m *module) buildOverview(visible func(deviceID string) bool) overviewResponse {
+func (m *module) buildOverview(opts overviewOptions) overviewResponse {
 	s := m.settings()
+	now := time.Now()
 	m.mu.RLock()
 	entries := make([]overviewEntry, 0, len(m.configs))
 	for deviceID, cfg := range m.configs {
-		if !visible(deviceID) {
+		if !opts.visible(deviceID) {
 			continue
 		}
 		entry := overviewEntry{DeviceID: deviceID, Config: cfg.redacted()}
 		if cfg.configured() {
 			entry.Plug = m.plugSnapshotLocked(cfg)
-			if usage := cloneDeviceUsage(m.usage[deviceID]); usage != nil {
+			if held := m.usage[deviceID]; held != nil {
+				// Only the parts the overview answers are copied, so a poll
+				// does not copy an hour of samples it does not send.
+				usage := cloneDeviceUsage(&DeviceUsage{Session: held.Session, CurrentPrint: held.CurrentPrint})
 				entry.SessionUsage = usage.Session
 				entry.CurrentPrintUsage = usage.CurrentPrint
+				if opts.history > 0 {
+					samples := append([]PowerSample{}, trimHistory(held.History, now, opts.history)...)
+					entry.PowerHistory = &samples
+				}
+			}
+			if opts.history > 0 && entry.PowerHistory == nil {
+				entry.PowerHistory = &[]PowerSample{}
 			}
 		}
 		entries = append(entries, entry)
@@ -3191,6 +3325,13 @@ func (m *module) buildOverview(visible func(deviceID string) bool) overviewRespo
 	up := m.mqttUp
 	errMsg := m.mqttError
 	m.mu.RUnlock()
+
+	// Asked outside the lock: each answer may be a question to the host.
+	if opts.canOperate != nil {
+		for i := range entries {
+			entries[i].CanOperate = entries[i].Config.configured() && opts.canOperate(entries[i].DeviceID)
+		}
+	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].DeviceID < entries[j].DeviceID })
 
@@ -3230,33 +3371,32 @@ func (m *module) visibleDevices(ctx context.Context, principal string) (map[stri
 }
 
 type statusResponse struct {
-	DeviceID            string          `json:"device_id"`
-	MQTTConfigured      bool            `json:"mqtt_configured"`
-	MQTTConnected       bool            `json:"mqtt_connected"`
-	MQTTBroker          string          `json:"mqtt_broker,omitempty"`
-	MQTTError           string          `json:"mqtt_error,omitempty"`
-	HAConfigured        bool            `json:"ha_configured"`
-	Config              DeviceConfig    `json:"config"`
-	Plug                *PlugTelemetry  `json:"plug,omitempty"`
-	DiscoveredPlugs     []PlugTelemetry `json:"discovered_plugs,omitempty"`
-	CanTurnOff          bool            `json:"can_turn_off"`
-	LockReason          string          `json:"lock_reason,omitempty"`
-	PrinterConnected    bool               `json:"printer_connected"`
-	PrinterState        string             `json:"printer_state,omitempty"`
-	PrinterMoving       bool               `json:"printer_moving"`
-	AutoOffPending      bool               `json:"auto_off_pending"`
-	AutoOffRemainingSec int                `json:"auto_off_remaining_sec"`
+	DeviceID            string         `json:"device_id"`
+	MQTTConfigured      bool           `json:"mqtt_configured"`
+	MQTTConnected       bool           `json:"mqtt_connected"`
+	MQTTBroker          string         `json:"mqtt_broker,omitempty"`
+	MQTTError           string         `json:"mqtt_error,omitempty"`
+	HAConfigured        bool           `json:"ha_configured"`
+	Config              DeviceConfig   `json:"config"`
+	Plug                *PlugTelemetry `json:"plug,omitempty"`
+	CanTurnOff          bool           `json:"can_turn_off"`
+	LockReason          string         `json:"lock_reason,omitempty"`
+	PrinterConnected    bool           `json:"printer_connected"`
+	PrinterState        string         `json:"printer_state,omitempty"`
+	PrinterMoving       bool           `json:"printer_moving"`
+	AutoOffPending      bool           `json:"auto_off_pending"`
+	AutoOffRemainingSec int            `json:"auto_off_remaining_sec"`
 	// AutoOffError is why the plug could not be turned off after a print.
 	// AutoOffKept is why the printer stayed on: cancelled or failed.
-	AutoOffError string `json:"auto_off_error,omitempty"`
-	AutoOffKept  string `json:"auto_off_kept,omitempty"`
-	DefaultCooldownSec  int                `json:"default_cooldown_sec"`
-	ConfirmTurnOff      bool               `json:"confirm_turn_off"`
-	PollIntervalSec     int                `json:"poll_interval_sec"`
-	PowerHistory        []PowerSample      `json:"power_history,omitempty"`
-	SessionUsage        *PowerSession      `json:"session_usage,omitempty"`
-	CurrentPrintUsage   *PrintPowerRecord  `json:"current_print_usage,omitempty"`
-	PrintHistory        []PrintPowerRecord `json:"print_history,omitempty"`
+	AutoOffError       string             `json:"auto_off_error,omitempty"`
+	AutoOffKept        string             `json:"auto_off_kept,omitempty"`
+	DefaultCooldownSec int                `json:"default_cooldown_sec"`
+	ConfirmTurnOff     bool               `json:"confirm_turn_off"`
+	PollIntervalSec    int                `json:"poll_interval_sec"`
+	PowerHistory       []PowerSample      `json:"power_history,omitempty"`
+	SessionUsage       *PowerSession      `json:"session_usage,omitempty"`
+	CurrentPrintUsage  *PrintPowerRecord  `json:"current_print_usage,omitempty"`
+	PrintHistory       []PrintPowerRecord `json:"print_history,omitempty"`
 }
 
 func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (statusResponse, error) {
@@ -3304,7 +3444,6 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		}
 	}
 	usageCopy := cloneDeviceUsage(m.usage[deviceID])
-	discovered := m.discoveredListLocked()
 	m.mu.RUnlock()
 
 	var (
@@ -3314,7 +3453,7 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		printHistoryCopy []PrintPowerRecord
 	)
 	if usageCopy != nil {
-		historyCopy = usageCopy.History
+		historyCopy = trimHistory(usageCopy.History, time.Now(), statusHistoryWindow)
 		sessionCopy = usageCopy.Session
 		currentPrintCopy = usageCopy.CurrentPrint
 		printHistoryCopy = usageCopy.PrintHistory
@@ -3329,7 +3468,6 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		HAConfigured:        s.haConfigured(),
 		Config:              cfg.redacted(),
 		Plug:                plugCopy,
-		DiscoveredPlugs:     discovered,
 		CanTurnOff:          safety.CanTurnOff,
 		LockReason:          safety.LockReason,
 		PrinterConnected:    safety.Connected,
@@ -3356,7 +3494,7 @@ func (m *module) routes() http.Handler {
 		answer(w, http.StatusOK, m.buildSettingsResponse())
 	})
 
-	mux.HandleFunc("PUT /settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PUT /settings", m.guard(mayConfigure, func(w http.ResponseWriter, r *http.Request) {
 		var body Settings
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			refuse(w, r, InvalidInput.New(err.Error()))
@@ -3370,6 +3508,15 @@ func (m *module) routes() http.Handler {
 			body.HAToken = current.HAToken
 		}
 		next := m.applyHostPins(body)
+		// A save that turns the built-in broker on or changes its user name
+		// or password needs both. An install from before 0.5.0 that runs the
+		// built-in broker without them can still save its other settings;
+		// the broker stays off and says why until both are set.
+		unchanged := current.MQTTBuiltin && current.MQTTUsername == next.MQTTUsername && current.MQTTPassword == next.MQTTPassword
+		if next.MQTTBuiltin && !next.builtinCredentialsSet() && !unchanged {
+			refuse(w, r, InvalidInput.New(errBuiltinNeedsCredentials))
+			return
+		}
 		if err := m.writeSettingsToDisk(next); err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
 			return
@@ -3379,9 +3526,9 @@ func (m *module) routes() http.Handler {
 		// Allow brief time for initial connect so the returned status reflects it if immediate.
 		time.Sleep(300 * time.Millisecond)
 		answer(w, http.StatusOK, m.buildSettingsResponse())
-	})
+	}))
 
-	mux.HandleFunc("POST /broker/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /broker/test", m.guard(mayConfigure, func(w http.ResponseWriter, r *http.Request) {
 		var override *Settings
 		if r.Body != nil {
 			raw, err := io.ReadAll(io.LimitReader(r.Body, 16<<10))
@@ -3401,9 +3548,9 @@ func (m *module) routes() http.Handler {
 			"error":   errMsg,
 			"warning": warnMsg,
 		})
-	})
+	}))
 
-	mux.HandleFunc("POST /ha/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /ha/test", m.guard(mayConfigure, func(w http.ResponseWriter, r *http.Request) {
 		var override *Settings
 		if r.Body != nil {
 			raw, err := io.ReadAll(io.LimitReader(r.Body, 16<<10))
@@ -3423,9 +3570,9 @@ func (m *module) routes() http.Handler {
 			"entities": entities,
 			"error":    errMsg,
 		})
-	})
+	}))
 
-	mux.HandleFunc("POST /discover", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /discover", m.guard(mayConfigure, func(w http.ResponseWriter, _ *http.Request) {
 		m.discoverPlugs()
 		m.syncDriverSubscriptions()
 		time.Sleep(400 * time.Millisecond)
@@ -3435,9 +3582,9 @@ func (m *module) routes() http.Handler {
 		answer(w, http.StatusOK, map[string]any{
 			"plugs": discovered,
 		})
-	})
+	}))
 
-	mux.HandleFunc("GET /assignments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /assignments", m.guard(mayConfigure, func(w http.ResponseWriter, r *http.Request) {
 		s := m.settings()
 		m.mu.RLock()
 		configsCopy := make(map[string]DeviceConfig, len(m.configs))
@@ -3464,20 +3611,27 @@ func (m *module) routes() http.Handler {
 			"ha_entities":          haEntities,
 			"default_cooldown_sec": s.AutoOffCooldownSec,
 		})
-	})
+	}))
 
 	mux.HandleFunc("GET /overview", func(w http.ResponseWriter, r *http.Request) {
-		seen, err := m.visibleDevices(r.Context(), routesapi.PrincipalOf(r))
+		seen, err := m.visibleDevices(r.Context(), m.principalOf(r))
 		if err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
 			return
 		}
-		answer(w, http.StatusOK, m.buildOverview(func(deviceID string) bool { return seen[deviceID] }))
+		person := m.principalOf(r)
+		resp := m.buildOverview(overviewOptions{
+			visible:    func(deviceID string) bool { return seen[deviceID] },
+			history:    historyAsked(r.URL.Query().Get("history")),
+			canOperate: func(deviceID string) bool { return m.mayHint(r.Context(), person, mayOperate, deviceID) },
+		})
+		resp.CanConfigure = m.mayHint(r.Context(), person, mayConfigure, "")
+		answer(w, http.StatusOK, resp)
 	})
 
 	mux.HandleFunc("GET /devices/{device_id}", func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")
-		principal := routesapi.PrincipalOf(r)
+		principal := m.principalOf(r)
 		resp, err := m.buildStatus(r.Context(), principal, deviceID)
 		if err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
@@ -3486,9 +3640,9 @@ func (m *module) routes() http.Handler {
 		answer(w, http.StatusOK, resp)
 	})
 
-	mux.HandleFunc("PUT /devices/{device_id}/config", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PUT /devices/{device_id}/config", m.guard(mayConfigureDevice, func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")
-		principal := routesapi.PrincipalOf(r)
+		principal := m.principalOf(r)
 		var body DeviceConfig
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			refuse(w, r, InvalidInput.New(err.Error()))
@@ -3547,11 +3701,11 @@ func (m *module) routes() http.Handler {
 			return
 		}
 		answer(w, http.StatusOK, resp)
-	})
+	}))
 
-	mux.HandleFunc("POST /devices/{device_id}/power", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /devices/{device_id}/power", m.guard(mayOperate, func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")
-		principal := routesapi.PrincipalOf(r)
+		principal := m.principalOf(r)
 		var body struct {
 			Action string `json:"action"` // "on", "off", "toggle"
 		}
@@ -3622,11 +3776,11 @@ func (m *module) routes() http.Handler {
 			return
 		}
 		answer(w, http.StatusOK, resp)
-	})
+	}))
 
-	mux.HandleFunc("POST /devices/{device_id}/auto-off", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /devices/{device_id}/auto-off", m.guard(mayOperate, func(w http.ResponseWriter, r *http.Request) {
 		deviceID := r.PathValue("device_id")
-		principal := routesapi.PrincipalOf(r)
+		principal := m.principalOf(r)
 		var body struct {
 			Enabled bool `json:"enabled"`
 			// Default, when sent, sets what the printer does after every
@@ -3663,7 +3817,7 @@ func (m *module) routes() http.Handler {
 			return
 		}
 		answer(w, http.StatusOK, resp)
-	})
+	}))
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		refuse(w, r, RouteNotFound.New("unknown path").With(fault.StringParam("path", r.URL.Path)))

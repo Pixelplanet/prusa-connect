@@ -266,6 +266,10 @@ export interface OverviewEntry {
   device_id: string;
   config: DeviceConfig;
   plug?: PlugTelemetry;
+  /** The samples of the minutes asked for, only when they were asked for. */
+  power_history?: PowerSample[];
+  /** Whether the person may switch this plug. The process asks again. */
+  can_operate?: boolean;
   session_usage?: PowerSession;
   current_print_usage?: PrintPowerRecord;
 }
@@ -280,6 +284,8 @@ export interface OverviewResponse {
   default_cooldown_sec: number;
   confirm_turn_off: boolean;
   poll_interval_sec: number;
+  /** Whether the person may change plugs and connections. */
+  can_configure?: boolean;
 }
 
 const opGetSettings: Operation = {
@@ -396,8 +402,13 @@ export function createApi(host: Pick<ModuleHost, 'client'>) {
     getAssignments: (signal?: AbortSignal) =>
       t.call<AssignmentsResponse>(opGetAssignments, {}, signal),
 
-    getOverview: (signal?: AbortSignal) =>
-      t.call<OverviewResponse>(opGetOverview, {}, signal),
+    /** history is the minutes of samples to carry, 0 for none. */
+    getOverview: (history: number, signal?: AbortSignal) =>
+      t.call<OverviewResponse>(
+        opGetOverview,
+        history > 0 ? { query: { history } } : {},
+        signal,
+      ),
 
     getStatus: (deviceId: string, signal?: AbortSignal) =>
       t.call<PowerStatus>(

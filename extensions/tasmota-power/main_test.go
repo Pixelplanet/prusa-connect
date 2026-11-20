@@ -444,20 +444,30 @@ func TestDirectHTTPTasmotaPollAndSwitch(t *testing.T) {
 		t.Fatalf("pollHTTPPlug failed: %v", err)
 	}
 
+	// saveConfig polls the plug in the background too, so the plug is read
+	// under the lock it is written under.
 	m.mu.RLock()
 	plug := m.plugs[cfg.plugKey()]
+	found := plug != nil
+	var online bool
+	var relay1, name string
+	var watts *float64
+	if found {
+		online = plug.Online != nil && *plug.Online
+		relay1, name, watts = plug.relayState(1), plug.FriendlyName, plug.PowerWatts
+	}
 	m.mu.RUnlock()
-	if plug == nil || plug.Online == nil || !*plug.Online {
-		t.Fatalf("expected HTTP plug online, got %+v", plug)
+	if !found || !online {
+		t.Fatalf("expected HTTP plug online, found=%v online=%v", found, online)
 	}
-	if plug.relayState(1) != "ON" {
-		t.Errorf("relayState(1) = %q, want ON", plug.relayState(1))
+	if relay1 != "ON" {
+		t.Errorf("relayState(1) = %q, want ON", relay1)
 	}
-	if plug.FriendlyName != "Entertainment Center" {
-		t.Errorf("FriendlyName = %q, want Entertainment Center", plug.FriendlyName)
+	if name != "Entertainment Center" {
+		t.Errorf("FriendlyName = %q, want Entertainment Center", name)
 	}
-	if plug.PowerWatts == nil || *plug.PowerWatts != 42.3 {
-		t.Errorf("PowerWatts = %v, want 42.3", plug.PowerWatts)
+	if watts == nil || *watts != 42.3 {
+		t.Errorf("PowerWatts = %v, want 42.3", watts)
 	}
 
 	if err := m.switchDevicePower(ctx, cfg, false); err != nil {

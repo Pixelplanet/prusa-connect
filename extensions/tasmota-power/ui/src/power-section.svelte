@@ -181,9 +181,12 @@
     const timer = setInterval(() => {
       void refresh();
     }, REFRESH_MS);
+    // The overview says whether the person may switch this plug.
+    const release = power.watch();
 
     return () => {
       clearInterval(timer);
+      release();
     };
   });
 
@@ -282,7 +285,7 @@
           <Switch
             id={`${uid}-auto-off`}
             checked={status.config.auto_off_after_print}
-            disabled={busy}
+            disabled={busy || !power.mayOperate(deviceId)}
             onCheckedChange={(next: boolean) => void setAutoOff(next)}
           />
           <Label for={`${uid}-auto-off`} variant="option">

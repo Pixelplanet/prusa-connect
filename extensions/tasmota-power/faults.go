@@ -57,6 +57,31 @@ var (
 		"topic",
 		"device",
 	))
+	NoPrincipal = fault.Register(faultDomain, "NO_PRINCIPAL", http.StatusForbidden, fault.Document(
+		"The request carries no signed-in person",
+		"Sign in to Prusa Connect and try again.",
+		fault.RetryNever,
+		fault.ShowDetail,
+	))
+	Forbidden = fault.Register(faultDomain, "FORBIDDEN", http.StatusForbidden, fault.Document(
+		"You may not do this",
+		"Switching a printer's plug takes the operator role on that printer, and changing plugs and connections takes the manager role. Ask an administrator of this server.",
+		fault.RetryNever,
+		fault.ShowDetail,
+		"action",
+	))
+	AccessUnknown = fault.Register(faultDomain, "ACCESS_UNKNOWN", http.StatusServiceUnavailable, fault.Document(
+		"The server could not say whether you may do this",
+		"Try the same request again in a moment.",
+		fault.RetryAllowed,
+		fault.ShowDetail,
+	))
+	ChecksNotApproved = fault.Register(faultDomain, "CHECKS_NOT_APPROVED", http.StatusForbidden, fault.Document(
+		"The server does not let this extension ask about access",
+		"An administrator approves the checks the extension declares on its Permissions tab.",
+		fault.RetryNever,
+		fault.ShowDetail,
+	))
 	InternalError = fault.Register(faultDomain, "INTERNAL_ERROR", http.StatusInternalServerError, fault.Document(
 		"Internal module error",
 		"Check the server logs for details.",
@@ -78,4 +103,16 @@ func refuse(w http.ResponseWriter, r *http.Request, raised *fault.Fault) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(problem.Status)
 	_ = json.NewEncoder(w).Encode(problem)
+}
+
+// notAllowed is the refusal for a question the host answered no.
+func notAllowed(q question) *fault.Fault {
+	detail := "changing plugs and connections takes configure_resource on this extension, which a manager holds"
+	switch q.action {
+	case actionOperate:
+		detail = "switching this printer's plug takes operate on the printer, which an operator of it holds"
+	case actionOperateResource:
+		detail = "switching a printer's plug takes operate_resource on this extension, which an operator holds"
+	}
+	return Forbidden.New(detail).With(fault.StringParam("action", q.action))
 }

@@ -10,6 +10,7 @@
   import { onMount } from 'svelte';
 
   import FaultNote from '../fault-note.svelte';
+  import RightsNote from '../rights-note.svelte';
   import { heldHost } from '../host';
   import { powerFor } from '../power.svelte';
   import HaPane from './ha-pane.svelte';
@@ -39,6 +40,7 @@
 </script>
 
 <div class="flex flex-col gap-6">
+  <RightsNote />
   {#if power.settings === undefined}
     <FaultNote fault={power.settingsFault} />
     {#if power.settingsFault === undefined}

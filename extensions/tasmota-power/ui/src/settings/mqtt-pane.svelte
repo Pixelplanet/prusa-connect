@@ -58,6 +58,8 @@
   let tls = $state(start.mqtt_tls);
   let username = $state(start.mqtt_username);
   let password = $state('');
+  // A generated password is shown, so it can be copied into each plug.
+  let showPassword = $state(false);
   let clientId = $state(start.mqtt_client_id);
 
   let saving = $state(false);
@@ -114,7 +116,31 @@
           changes.mqtt_port !== now.mqtt_port))
     );
   });
-  const canTest = $derived(builtin || brokerHost.trim() !== '');
+  // The built-in broker lets in only clients that sign in, so it needs a
+  // user name and a password, saved or typed now.
+  const missingCredentials = $derived(
+    builtin &&
+      (username.trim() === '' ||
+        (password === '' && !saved.settings.has_password)),
+  );
+  const canTest = $derived(
+    builtin ? !missingCredentials : brokerHost.trim() !== '',
+  );
+
+  const passwordHint = $derived.by((): string => {
+    if (saved.settings.has_password) return t('power.field.secretSaved');
+    return builtin ? t('power.field.required') : t('power.field.optional');
+  });
+
+  /** Twenty letters and digits from the browser's random source. */
+  const generatePassword = (): void => {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const picked = crypto.getRandomValues(new Uint32Array(20));
+    password = Array.from(picked, (n) => letters[n % letters.length]).join('');
+    showPassword = true;
+    tested = undefined;
+    justSaved = false;
+  };
 
   const pickMode = (value: string): void => {
     builtin = value === 'builtin';
@@ -154,6 +180,7 @@
       brokerHost = answer.settings.mqtt_host;
       port = String(answer.settings.mqtt_port || PORT);
       password = '';
+      showPassword = false;
       justSaved = true;
     } catch (thrown) {
       fault = thrown;
@@ -321,7 +348,10 @@
           controlProps={{
             value: username,
             oninput: typed((value) => (username = value)),
-            placeholder: t('power.field.optional'),
+            placeholder: builtin
+              ? t('power.field.required')
+              : t('power.field.optional'),
+            required: builtin,
             autocomplete: 'off',
           }}
         />
@@ -329,16 +359,33 @@
           label={t('power.connections.mqtt.password')}
           control={Input}
           controlProps={{
-            type: 'password',
+            type: showPassword ? 'text' : 'password',
             value: password,
             oninput: typed((value) => (password = value)),
-            placeholder: saved.settings.has_password
-              ? t('power.field.secretSaved')
-              : t('power.field.optional'),
+            placeholder: passwordHint,
+            required: builtin && !saved.settings.has_password,
             autocomplete: 'new-password',
           }}
         />
       </div>
+      {#if builtin}
+        <div
+          class="flex flex-wrap items-center gap-2"
+          data-part="builtin-credentials"
+        >
+          <p class="text-muted-foreground min-w-0 flex-1 text-xs">
+            {t('power.connections.mqtt.builtinCredentials')}
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onclick={generatePassword}
+          >
+            {t('power.connections.mqtt.generatePassword')}
+          </Button>
+        </div>
+      {/if}
 
       <Collapsible>
         <CollapsibleTrigger variant="inline">
@@ -399,7 +446,11 @@
       >
         {t('power.connections.test')}
       </Button>
-      <Button type="submit" disabled={!dirty || testing} pending={saving}>
+      <Button
+        type="submit"
+        disabled={!dirty || testing || missingCredentials}
+        pending={saving}
+      >
         {t('power.connections.save')}
       </Button>
     {/snippet}

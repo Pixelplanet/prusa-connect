@@ -337,7 +337,7 @@ func TestHomeAssistantDriver(t *testing.T) {
 }
 
 func TestAllMQTTDriversEndToEndOverRealBroker(t *testing.T) {
-	brk, err := StartEmbeddedBroker("127.0.0.1:0", "", "")
+	brk, err := StartEmbeddedBroker("127.0.0.1:0", "plugs", "secret")
 	if err != nil {
 		t.Fatalf("StartEmbeddedBroker: %v", err)
 	}
@@ -348,6 +348,8 @@ func TestAllMQTTDriversEndToEndOverRealBroker(t *testing.T) {
 	// Simulated smart-plug responder connected to the real TCP MQTT broker.
 	simClient := mqtt.NewClient(mqtt.NewClientOptions().
 		AddBroker(brokerURL).
+		SetUsername("plugs").
+		SetPassword("secret").
 		SetClientID("plug-simulator").
 		SetConnectTimeout(2 * time.Second).
 		SetAutoReconnect(false))
@@ -435,6 +437,8 @@ func TestAllMQTTDriversEndToEndOverRealBroker(t *testing.T) {
 	s := normalizeSettings(Settings{
 		MQTTHost:     "127.0.0.1",
 		MQTTPort:     brk.Port(),
+		MQTTUsername: "plugs",
+		MQTTPassword: "secret",
 		MQTTClientID: "ext-e2e-sim",
 	})
 	modClient := mqtt.NewClient(m.buildMQTTOptions(s, brokerURL, "ext-e2e-sim").SetAutoReconnect(false))
@@ -444,45 +448,45 @@ func TestAllMQTTDriversEndToEndOverRealBroker(t *testing.T) {
 	defer modClient.Disconnect(50)
 
 	cases := []struct {
-		name          string
-		cfg           DeviceConfig
-		wantTopic     string
-		wantPayloadOn string
+		name           string
+		cfg            DeviceConfig
+		wantTopic      string
+		wantPayloadOn  string
 		wantPayloadOff string
 	}{
 		{
-			name:          "ShellyGen1",
-			cfg:           normalizeDeviceConfig(DeviceConfig{Driver: DriverShellyGen1, TasmotaTopic: "shellyplug-sim", RelayIndex: 1}),
-			wantTopic:     "shellies/shellyplug-sim/relay/0/command",
-			wantPayloadOn: "on",
+			name:           "ShellyGen1",
+			cfg:            normalizeDeviceConfig(DeviceConfig{Driver: DriverShellyGen1, TasmotaTopic: "shellyplug-sim", RelayIndex: 1}),
+			wantTopic:      "shellies/shellyplug-sim/relay/0/command",
+			wantPayloadOn:  "on",
 			wantPayloadOff: "off",
 		},
 		{
-			name:          "ShellyGen2",
-			cfg:           normalizeDeviceConfig(DeviceConfig{Driver: DriverShellyGen2, TasmotaTopic: "shellyplus-sim", RelayIndex: 1}),
-			wantTopic:     "shellyplus-sim/command/switch:0",
-			wantPayloadOn: "on",
+			name:           "ShellyGen2",
+			cfg:            normalizeDeviceConfig(DeviceConfig{Driver: DriverShellyGen2, TasmotaTopic: "shellyplus-sim", RelayIndex: 1}),
+			wantTopic:      "shellyplus-sim/command/switch:0",
+			wantPayloadOn:  "on",
 			wantPayloadOff: "off",
 		},
 		{
-			name:          "Zigbee2MQTT",
-			cfg:           normalizeDeviceConfig(DeviceConfig{Driver: DriverZigbee2MQTT, TasmotaTopic: "z2m_sim", RelayIndex: 1}),
-			wantTopic:     "zigbee2mqtt/z2m_sim/set",
-			wantPayloadOn: `{"state":"ON"}`,
+			name:           "Zigbee2MQTT",
+			cfg:            normalizeDeviceConfig(DeviceConfig{Driver: DriverZigbee2MQTT, TasmotaTopic: "z2m_sim", RelayIndex: 1}),
+			wantTopic:      "zigbee2mqtt/z2m_sim/set",
+			wantPayloadOn:  `{"state":"ON"}`,
 			wantPayloadOff: `{"state":"OFF"}`,
 		},
 		{
-			name:          "ESPHome",
-			cfg:           normalizeDeviceConfig(DeviceConfig{Driver: DriverESPHome, TasmotaTopic: "esphome-sim/switch/printer"}),
-			wantTopic:     "esphome-sim/switch/printer/command",
-			wantPayloadOn: "ON",
+			name:           "ESPHome",
+			cfg:            normalizeDeviceConfig(DeviceConfig{Driver: DriverESPHome, TasmotaTopic: "esphome-sim/switch/printer"}),
+			wantTopic:      "esphome-sim/switch/printer/command",
+			wantPayloadOn:  "ON",
 			wantPayloadOff: "OFF",
 		},
 		{
-			name:          "OpenBeken",
-			cfg:           normalizeDeviceConfig(DeviceConfig{Driver: DriverOpenBeken, TasmotaTopic: "obk_sim", RelayIndex: 1}),
-			wantTopic:     "obk_sim/0/set",
-			wantPayloadOn: "1",
+			name:           "OpenBeken",
+			cfg:            normalizeDeviceConfig(DeviceConfig{Driver: DriverOpenBeken, TasmotaTopic: "obk_sim", RelayIndex: 1}),
+			wantTopic:      "obk_sim/0/set",
+			wantPayloadOn:  "1",
 			wantPayloadOff: "0",
 		},
 		{

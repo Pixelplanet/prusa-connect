@@ -103,13 +103,15 @@
     {#snippet actions()}
       <div class="flex flex-wrap items-center justify-end gap-2">
         <ViewModeToggle value={view} onValueChange={pickView} options={views} />
-        <LinkButton
-          href={settingsTabHref('plugs')}
-          variant="secondary"
-          size="md"
-        >
-          {t('power.page.manage')}
-        </LinkButton>
+        {#if power.mayConfigure}
+          <LinkButton
+            href={settingsTabHref('plugs')}
+            variant="secondary"
+            size="md"
+          >
+            {t('power.page.manage')}
+          </LinkButton>
+        {/if}
       </div>
     {/snippet}
   </PageHeader>
@@ -139,9 +141,15 @@
       headingLevel="h2"
     >
       {#snippet action()}
-        <LinkButton href={settingsTabHref('plugs')} variant="default" size="md">
-          {t('power.page.setUp')}
-        </LinkButton>
+        {#if power.mayConfigure}
+          <LinkButton
+            href={settingsTabHref('plugs')}
+            variant="default"
+            size="md"
+          >
+            {t('power.page.setUp')}
+          </LinkButton>
+        {/if}
       {/snippet}
     </EmptyState>
   {:else}
@@ -270,7 +278,8 @@
                         printer: row.name,
                       })}
                       checked={row.entry?.config.auto_off_default === true}
-                      disabled={busyPrinter === row.id}
+                      disabled={busyPrinter === row.id ||
+                        !power.mayOperate(row.id)}
                       onCheckedChange={(enabled: boolean) =>
                         void setDefault(row.id, enabled)}
                     />
@@ -297,9 +306,11 @@
     {#if without > 0}
       <p class="text-muted-foreground text-sm" data-part="without">
         {t('power.page.without', { count: without })}
-        <LinkButton href={settingsTabHref('plugs')}>
-          {t('power.page.setUp')}
-        </LinkButton>
+        {#if power.mayConfigure}
+          <LinkButton href={settingsTabHref('plugs')}>
+            {t('power.page.setUp')}
+          </LinkButton>
+        {/if}
       </p>
     {/if}
   {/if}

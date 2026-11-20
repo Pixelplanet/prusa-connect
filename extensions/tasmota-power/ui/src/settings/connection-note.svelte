@@ -37,6 +37,7 @@
       {t('power.setup.connection.builtinReady', {
         host: builtinHost,
         port: String(settings.mqtt_builtin_port ?? 1883),
+        user: settings.settings.mqtt_username,
       })}
     </AlertDescription>
   </Alert>
@@ -52,6 +53,9 @@
   <Alert variant="warning" data-part="connection-missing">
     <AlertDescription>
       {t('power.setup.connection.mqttMissing')}
+      {#if settings?.mqtt_error}
+        {settings.mqtt_error}
+      {/if}
       <LinkButton href={settingsTabHref('connections')}>
         {t('power.setup.connection.open')}
       </LinkButton>
