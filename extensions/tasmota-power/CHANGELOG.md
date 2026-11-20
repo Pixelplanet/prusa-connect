@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1 - 2026-11-19
+## 0.5.2 - 2026-11-19
 
 - Add multi-plug driver support inside a single unified extension sharing safety interlocks, auto-off cooldown, 30-minute power graph, and session/print energy tracking:
   - **Shelly Gen1 (MQTT)** with `shellies/announce` discovery, online LWT, overpower detection, and per-relay power readings.
@@ -13,7 +13,9 @@
   - **Home Assistant (REST)** optional integration (`ha_url` + Long-Lived Access Token, live `POST /ha/test` entity picker for switch + optional power sensor) for TP-Link Kasa/Tapo, Matter, Thread, Z-Wave, and Tuya plugs.
 - Split the extension's settings into three tabs: **Plugs** (every printer with its plug and live state), **Connections** (MQTT broker and Home Assistant, each tested and saved on its own) and **Automation** (the power-off rules, and each printer's auto-off choice and own delay).
 - Set up a plug in a guided dialog: pick the plug, pick how Connect reaches it, then fill in only the fields that plug needs. The dialog waits for the plug and says whether it answered. A plug and relay another printer already has is refused before saving.
-- Add a **Power** page in the sidebar with what the fleet draws now, which plugs are on, and buttons that switch each plug.
+- Add a **Power Control** page in the sidebar with what the fleet draws now, which plugs are on, and buttons that switch each plug. It shows the printers as a table or as cards with the printer's picture.
+- A printer can now turn off after every print. The Automation tab and the Power Control page set that default; the switch on the printer's own page still decides for a single print.
+- Fix auto-off cutting the power of a printer that lost its connection during a print. Auto-off now waits until the printer is back and reports the print as over.
 - Add a **Printer power** dashboard card.
 - Rebuild the printer's **Power Control** section and the listing card line on the app's own components, in light and dark theme. A plug that does not answer is now said on the card instead of leaving the line empty.
 - Read every plug in one request (`GET /overview`), kept to the printers the caller may see, in place of one request per printer card.

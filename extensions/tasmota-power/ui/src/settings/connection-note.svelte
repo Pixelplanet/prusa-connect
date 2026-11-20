@@ -5,6 +5,7 @@
 <script lang="ts">
   import { Alert, AlertDescription } from '@prusa/connect-ui/primitives';
 
+  import { textOr } from '../api';
   import type { Transport } from '../drivers';
   import { heldHost } from '../host';
   import LinkButton from '../link-button.svelte';
@@ -21,12 +22,25 @@
   const mqttUp = $derived(
     settings?.mqtt_connected ?? power.overview?.mqtt_connected,
   );
+  // The address a plug on the network reaches the built-in broker at.
+  const builtinHost = $derived(
+    textOr(settings?.settings.mqtt_host, window.location.hostname),
+  );
   const haReady = $derived(
     settings?.ha_configured ?? power.overview?.ha_configured,
   );
 </script>
 
-{#if transport === 'mqtt' && mqttUp === true}
+{#if transport === 'mqtt' && mqttUp === true && settings?.mqtt_builtin_running}
+  <Alert variant="success" data-part="connection-builtin">
+    <AlertDescription>
+      {t('power.setup.connection.builtinReady', {
+        host: builtinHost,
+        port: String(settings.mqtt_builtin_port ?? 1883),
+      })}
+    </AlertDescription>
+  </Alert>
+{:else if transport === 'mqtt' && mqttUp === true}
   <p class="text-muted-foreground text-xs" data-part="connection-ready">
     {settings?.mqtt_broker
       ? t('power.setup.connection.mqttReadyAt', {

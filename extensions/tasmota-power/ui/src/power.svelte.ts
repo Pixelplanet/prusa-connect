@@ -245,8 +245,13 @@ export class PowerStore {
     return status;
   }
 
-  async setAutoOff(deviceId: string, enabled: boolean): Promise<PowerStatus> {
-    const status = await this.#api.setAutoOff(deviceId, enabled);
+  /** For one print, or with `asDefault` for every print. */
+  async setAutoOff(
+    deviceId: string,
+    enabled: boolean,
+    asDefault = false,
+  ): Promise<PowerStatus> {
+    const status = await this.#api.setAutoOff(deviceId, enabled, asDefault);
     await this.refresh();
 
     return status;

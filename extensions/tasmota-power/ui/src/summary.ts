@@ -10,6 +10,14 @@ export interface PlugRow {
   readonly entry: OverviewEntry | undefined;
 }
 
+/** One printer in a list of plugs. */
+export interface PlugListRow extends PlugRow {
+  readonly id: string;
+  readonly name: string;
+  /** The model as the printer reports it. */
+  readonly model: string;
+}
+
 export interface PlugTotals {
   /** What every plug that reports a reading draws now, added up. */
   readonly watts: number;

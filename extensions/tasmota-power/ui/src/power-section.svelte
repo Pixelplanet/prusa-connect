@@ -276,6 +276,14 @@
           <Label for={`${uid}-auto-off`} variant="option">
             {t('power.section.autoOff')}
           </Label>
+          <span
+            class="text-muted-foreground text-xs"
+            data-part="auto-off-default"
+          >
+            {status.config.auto_off_default
+              ? t('power.section.autoOffDefaultOn')
+              : t('power.section.autoOffDefaultOff')}
+          </span>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           {#if status.auto_off_pending}

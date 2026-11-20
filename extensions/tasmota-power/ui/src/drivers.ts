@@ -305,6 +305,7 @@ export const configOf = (
     driver: draft.driver,
     tasmota_topic: '',
     auto_off_after_print: existing?.auto_off_after_print ?? false,
+    auto_off_default: existing?.auto_off_default,
     cooldown_sec: existing?.cooldown_sec,
   };
 
@@ -356,6 +357,7 @@ export const clearedConfig = (
   ha_power_entity_id: '',
   mqtt_command_topic: '',
   auto_off_after_print: existing?.auto_off_after_print ?? false,
+  auto_off_default: existing?.auto_off_default,
   cooldown_sec: existing?.cooldown_sec,
 });
 

@@ -214,33 +214,55 @@
        the module for the module's own utilities to reach it. -->
   <div data-module={OWN_MODULE} class="flex flex-col gap-4 p-1">
     {#if step !== 'type' && kind !== undefined}
-      <div class="flex flex-col gap-1 text-sm" data-part="answers">
-        <div class="flex items-center justify-between gap-2">
-          <span>
-            {t('power.setup.answer', {
-              question: t('power.setup.step.type'),
-              answer: t(kind.name),
-            })}
+      <ol class="border-border rounded-sm border" data-part="answers">
+        <li class="flex items-center gap-3 px-3 py-2 text-sm">
+          {@render marker('type')}
+          <span class="flex min-w-0 flex-1 flex-col">
+            <span class="text-muted-foreground text-xs">
+              {t('power.setup.step.type')}
+            </span>
+            <span class="truncate font-medium">{t(kind.name)}</span>
           </span>
-          <Button variant="link" onclick={() => (step = 'type')}>
+          <Button
+            variant="link"
+            aria-label={t('power.setup.changeStep', {
+              step: t('power.setup.step.type'),
+            })}
+            onclick={() => (step = 'type')}
+          >
             {t('power.setup.changeAnswer')}
           </Button>
-        </div>
+        </li>
         {#if step === 'plug' && kind.routes.length > 1}
-          <div class="flex items-center justify-between gap-2">
-            <span>
-              {t('power.setup.answer', {
-                question: t('power.setup.step.route'),
-                answer: t(routeOf(draft.driver).label),
-              })}
+          <li
+            class="border-border flex items-center gap-3 border-t px-3 py-2 text-sm"
+          >
+            {@render marker('route')}
+            <span class="flex min-w-0 flex-1 flex-col">
+              <span class="text-muted-foreground text-xs">
+                {t('power.setup.step.route')}
+              </span>
+              <span class="truncate font-medium">
+                {t(routeOf(draft.driver).label)}
+              </span>
             </span>
-            <Button variant="link" onclick={() => (step = 'route')}>
+            <Button
+              variant="link"
+              aria-label={t('power.setup.changeStep', {
+                step: t('power.setup.step.route'),
+              })}
+              onclick={() => (step = 'route')}
+            >
               {t('power.setup.changeAnswer')}
             </Button>
-          </div>
+          </li>
         {/if}
-      </div>
+      </ol>
     {/if}
+    <h3 class="flex items-center gap-3 text-sm font-semibold" data-part="step">
+      {@render marker(step)}
+      {t(`power.setup.step.${step}`)}
+    </h3>
     {#if step === 'type'}
       <p class="text-muted-foreground text-sm">
         {t('power.setup.type.question')}
@@ -306,6 +328,17 @@
     <FaultNote {fault} />
   </div>
 </GuidedDialog>
+
+<!-- The number a step has in this flow, so a line and the step it belongs to
+     carry the same mark. -->
+{#snippet marker(id: StepId)}
+  <span
+    aria-hidden="true"
+    class="bg-secondary text-secondary-foreground flex size-6 shrink-0 items-center justify-center rounded-sm text-xs font-semibold tabular-nums"
+  >
+    {stepIds.indexOf(id) + 1}
+  </span>
+{/snippet}
 
 {#snippet failureActions()}
   <Button

@@ -257,11 +257,11 @@
                       aria-label={t('power.automation.printers.autoOffOf', {
                         printer: name,
                       })}
-                      checked={config.auto_off_after_print}
+                      checked={config.auto_off_default === true}
                       disabled={busyPrinter === printer.id}
                       onCheckedChange={(next: boolean) =>
                         void change(printer.id, () =>
-                          power.setAutoOff(printer.id, next),
+                          power.setAutoOff(printer.id, next, true),
                         )}
                     />
                   </TableCell>
