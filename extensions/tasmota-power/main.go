@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.5.1")
+	release = extension.Version("0.5.2")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -252,7 +252,11 @@ type DeviceConfig struct {
 	HAEntityID            string `json:"ha_entity_id,omitempty"`
 	HAPowerEntityID       string `json:"ha_power_entity_id,omitempty"`
 	RelayIndex            int    `json:"relay_index,omitempty"`
+	// AutoOffAfterPrint says whether the plug turns off after the print that
+	// runs now, or the next one. AutoOffDefault is what it goes back to once
+	// that print is over: a printer that turns off after every print has both.
 	AutoOffAfterPrint     bool   `json:"auto_off_after_print"`
+	AutoOffDefault        bool   `json:"auto_off_default,omitempty"`
 	CooldownSec           *int   `json:"cooldown_sec,omitempty"`
 }
 
@@ -565,6 +569,16 @@ var errBrokerOffline = errors.New("mqtt broker not connected")
 type autoOffTracker struct {
 	sawActive  bool
 	finishedAt *time.Time
+	// fired says the plug was turned off for the print before. Nothing more
+	// happens until the printer is seen printing again.
+	fired bool
+}
+
+// skippedPrint follows the one print a person switched auto-off away for, on
+// a printer that turns off by default.
+type skippedPrint struct {
+	sawPrint bool
+	ended    bool
 }
 
 type axisSample struct {
@@ -639,6 +653,7 @@ type module struct {
 	plugs          map[string]*PlugTelemetry
 	configs        map[string]DeviceConfig
 	trackers       map[string]*autoOffTracker
+	skips          map[string]*skippedPrint
 	axes           map[string]*axisSample
 	usage          map[string]*DeviceUsage
 	lastUsageSaved time.Time
@@ -652,6 +667,7 @@ func newModule(conn *wirerpc.Conn) *module {
 		plugs:      make(map[string]*PlugTelemetry),
 		configs:    make(map[string]DeviceConfig),
 		trackers:   make(map[string]*autoOffTracker),
+		skips:      make(map[string]*skippedPrint),
 		axes:       make(map[string]*axisSample),
 		usage:      make(map[string]*DeviceUsage),
 	}
@@ -1187,6 +1203,9 @@ func (m *module) saveConfig(_ context.Context, deviceID string, cfg DeviceConfig
 	m.configs[deviceID] = cfg
 	if !cfg.AutoOffAfterPrint {
 		delete(m.trackers, deviceID)
+	}
+	if cfg.AutoOffAfterPrint || !cfg.AutoOffDefault {
+		delete(m.skips, deviceID)
 	}
 	dir := m.dataDir
 	snapshot := make(map[string]DeviceConfig, len(m.configs))
@@ -2749,6 +2768,99 @@ func (m *module) autoOffLoop(ctx context.Context) {
 	}
 }
 
+// printing reports whether the printer runs a print. Heating or moving by hand
+// keeps a printer busy and is not a print.
+func (s printerSafety) printing() bool {
+	return s.ActiveJob || s.PrinterState == "PRINTING" || s.PrinterState == "PAUSED"
+}
+
+// autoOffDue reports whether a printer armed to turn off after its print has
+// finished that print and waited out cooldown. It turns off only after a print
+// it saw, or one the printer still reports as finished.
+func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time.Duration, now time.Time) bool {
+	// A printer that is away says nothing about its print. Auto-off waits
+	// until it is back, so a lost connection never cuts the power mid-print.
+	if !safety.Connected {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tr, ok := m.trackers[deviceID]
+	if !ok {
+		tr = &autoOffTracker{}
+		m.trackers[deviceID] = tr
+	}
+
+	if !safety.CanTurnOff {
+		if safety.printing() {
+			tr.sawActive = true
+		}
+		tr.finishedAt = nil
+		return false
+	}
+
+	if !tr.sawActive && (tr.fired || safety.PrinterState != "FINISHED") {
+		return false
+	}
+
+	if tr.finishedAt == nil {
+		at := now
+		tr.finishedAt = &at
+	}
+
+	return now.Sub(*tr.finishedAt) >= cooldown
+}
+
+// afterAutoOff is the config once the plug was turned off after a print. The
+// choice for one print is used up, so the printer goes back to its default. A
+// printer that turns off by default stays armed, and waits to see its next
+// print before it acts again.
+func (m *module) afterAutoOff(deviceID string, cfg DeviceConfig) DeviceConfig {
+	cfg.AutoOffAfterPrint = cfg.AutoOffDefault
+
+	m.mu.Lock()
+	if cfg.AutoOffDefault {
+		m.trackers[deviceID] = &autoOffTracker{fired: true}
+	} else {
+		delete(m.trackers, deviceID)
+	}
+	m.mu.Unlock()
+
+	return cfg
+}
+
+// skippedPrintIsOver follows a printer that turns off by default while a
+// person has switched that off for one print. It answers true once, when the
+// print after the skipped one starts.
+func (m *module) skippedPrintIsOver(deviceID string, safety printerSafety) bool {
+	if !safety.Connected {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	skip, ok := m.skips[deviceID]
+	if !ok {
+		skip = &skippedPrint{}
+		m.skips[deviceID] = skip
+	}
+
+	switch {
+	case safety.printing() && skip.ended:
+		delete(m.skips, deviceID)
+		return true
+	case safety.printing():
+		skip.sawPrint = true
+	case skip.sawPrint:
+		skip.ended = true
+	}
+
+	return false
+}
+
 func (m *module) stepAutoOff(ctx context.Context) {
 	m.pollAssignedPlugsEnergy()
 
@@ -2780,6 +2892,12 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		hasActiveUsage = hasActiveUsage || active
 
 		if !cfg.AutoOffAfterPrint {
+			// Switched off for one print on a printer that turns off by
+			// default: the default comes back when the print after it starts.
+			if cfg.AutoOffDefault && m.skippedPrintIsOver(deviceID, safety) {
+				cfg.AutoOffAfterPrint = true
+				_ = m.saveConfig(ctx, deviceID, cfg)
+			}
 			continue
 		}
 
@@ -2788,35 +2906,7 @@ func (m *module) stepAutoOff(ctx context.Context) {
 			cooldownSec = *cfg.CooldownSec
 		}
 
-		m.mu.Lock()
-		tr, ok := m.trackers[deviceID]
-		if !ok {
-			tr = &autoOffTracker{}
-			m.trackers[deviceID] = tr
-		}
-
-		if !safety.CanTurnOff {
-			tr.sawActive = true
-			tr.finishedAt = nil
-			m.mu.Unlock()
-			continue
-		}
-
-		if !tr.sawActive && safety.PrinterState != "FINISHED" {
-			m.mu.Unlock()
-			continue
-		}
-
-		if tr.finishedAt == nil {
-			now := time.Now()
-			tr.finishedAt = &now
-		}
-
-		elapsed := time.Since(*tr.finishedAt)
-		ready := elapsed >= time.Duration(cooldownSec)*time.Second
-		m.mu.Unlock()
-
-		if !ready {
+		if !m.autoOffDue(deviceID, safety, time.Duration(cooldownSec)*time.Second, time.Now()) {
 			continue
 		}
 
@@ -2831,7 +2921,7 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		}
 
 		fmt.Fprintf(os.Stderr, "%s: auto-off triggered for printer %q [%s] (plug %s relay %d)\n", logName, safety.DeviceName, deviceID, cfg.plugKey(), cfg.relayIndex())
-		cfg.AutoOffAfterPrint = false
+		cfg = m.afterAutoOff(deviceID, cfg)
 		_ = m.saveConfig(ctx, deviceID, cfg)
 	}
 
@@ -3411,6 +3501,9 @@ func (m *module) routes() http.Handler {
 		principal := routesapi.PrincipalOf(r)
 		var body struct {
 			Enabled bool `json:"enabled"`
+			// Default, when sent, sets what the printer does after every
+			// print, and the print that runs now follows it.
+			Default *bool `json:"default"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			refuse(w, r, InvalidInput.New(err.Error()))
@@ -3427,6 +3520,10 @@ func (m *module) routes() http.Handler {
 			return
 		}
 		cfg.AutoOffAfterPrint = body.Enabled
+		if body.Default != nil {
+			cfg.AutoOffDefault = *body.Default
+			cfg.AutoOffAfterPrint = *body.Default
+		}
 		if err := m.saveConfig(r.Context(), deviceID, cfg); err != nil {
 			refuse(w, r, InternalError.New(err.Error()))
 			return

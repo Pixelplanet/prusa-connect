@@ -100,7 +100,10 @@ export interface DeviceConfig {
   ha_entity_id?: string | undefined;
   ha_power_entity_id?: string | undefined;
   relay_index?: number | undefined;
+  /** The plug turns off after the print that runs now, or the next one. */
   auto_off_after_print: boolean;
+  /** The plug turns off after every print. */
+  auto_off_default?: boolean | undefined;
   cooldown_sec?: number | undefined;
 }
 
@@ -411,10 +414,11 @@ export function createApi(host: Pick<ModuleHost, 'client'>) {
         body: { action },
       }),
 
-    setAutoOff: (deviceId: string, enabled: boolean) =>
+    /** `asDefault` sets what the printer does after every print. */
+    setAutoOff: (deviceId: string, enabled: boolean, asDefault = false) =>
       t.call<PowerStatus>(opPostAutoOff, {
         path: { device_id: deviceId },
-        body: { enabled },
+        body: asDefault ? { enabled, default: enabled } : { enabled },
       }),
   };
 }
