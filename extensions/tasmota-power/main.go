@@ -35,7 +35,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.5.5")
+	release = extension.Version("0.5.6")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883

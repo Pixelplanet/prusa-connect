@@ -32,6 +32,7 @@
   import LinkButton from '../link-button.svelte';
   import { portsTabHref } from '../links';
   import { powerFor, type SettingsChanges } from '../power.svelte';
+  import { PANE_BODY } from './pane-body';
 
   let { saved }: { saved: SettingsResponse } = $props();
 
@@ -196,7 +197,7 @@
     description={t('power.connections.mqtt.description')}
     edged
   >
-    <div class="flex flex-col gap-4">
+    <div class={PANE_BODY}>
       <div class="flex flex-wrap items-center gap-2 text-xs" data-part="status">
         {#if saved.mqtt_connected}
           <Badge variant="success">{t('power.connections.connected')}</Badge>

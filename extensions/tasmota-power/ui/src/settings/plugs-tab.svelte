@@ -40,6 +40,7 @@
   import PlugBadge from '../plug-badge.svelte';
   import { plugStateOf, wattsNow } from '../plug-state';
   import { powerFor } from '../power.svelte';
+  import { PANE_BODY } from './pane-body';
   import PlugDialog from './plug-dialog.svelte';
 
   interface Target {
@@ -127,7 +128,7 @@
   description={t('power.plugs.description')}
   edged
 >
-  <div class="flex flex-col gap-4">
+  <div class={PANE_BODY}>
     {#if mqttMissing}
       <Alert variant="warning" data-part="mqtt-missing">
         <AlertDescription>

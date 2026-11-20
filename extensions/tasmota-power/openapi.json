@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "tasmota-power",
-    "version": "0.5.5",
+    "version": "0.5.6",
     "description": "Multi-driver smart plug control and energy monitoring per printer (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant)."
   },
   "paths": {

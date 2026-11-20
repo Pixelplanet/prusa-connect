@@ -36,8 +36,13 @@
   const HEAD_ROWS = 2;
   /** How many printers fit in one grid row of the list. */
   const PRINTERS_PER_ROW = 2;
-  /** The fewest grid rows that leave the graph room to be read. */
+  /** The fewest grid rows that leave the graph room, until the room is measured. */
   const GRAPH_ROWS = 4;
+  /**
+   * The least height, in pixels, the graph is drawn in. A grid row is not the
+   * same height in every look of the app, so the room is measured.
+   */
+  const MIN_GRAPH_PX = 110;
   /** The spans the card offers, in minutes, as the temperature card does. */
   const SPANS = [5, 15, 30, 60] as const;
   const DEFAULT_SPAN = 15;
@@ -57,7 +62,11 @@
     const picked = Number(config.minutes);
     return SPANS.find((span) => span === picked) ?? DEFAULT_SPAN;
   });
-  const showGraph = $derived(graphOn && size.h >= GRAPH_ROWS);
+  /** The height the card's body has, 0 until it is drawn. */
+  let roomPx = $state(0);
+  const showGraph = $derived(
+    graphOn && (roomPx === 0 ? size.h >= GRAPH_ROWS : roomPx >= MIN_GRAPH_PX),
+  );
 
   let now = $state(Date.now());
 
@@ -104,6 +113,24 @@
   const listed = $derived(rows.slice(0, room));
   const more = $derived(rows.length - listed.length);
 
+  const scope = $derived(
+    picked.length === 0
+      ? t('power.dashboard.everyPrinter')
+      : t('power.dashboard.printers', { count: picked.length }),
+  );
+  const totalText = $derived(
+    totals.metered > 0 ? formatWatts(totals.watts) : t('power.page.noReading'),
+  );
+  // With the graph drawn, the figures stand in the heading's second line, so
+  // the graph has the height the core's temperature card gives its own.
+  const figures = $derived(
+    t('power.dashboard.figures', {
+      total: totalText,
+      on: totals.on,
+      all: rows.length,
+    }),
+  );
+
   const since = $derived(now - minutes * 60_000);
   const series = $derived.by((): ChartSeries[] =>
     rows.map((row) => ({
@@ -120,9 +147,7 @@
 <TilePanel
   {title}
   fallback={t('power.dashboard.heading')}
-  subline={picked.length === 0
-    ? t('power.dashboard.everyPrinter')
-    : t('power.dashboard.printers', { count: picked.length })}
+  subline={showGraph && rows.length > 0 ? figures : scope}
 >
   {#snippet trailing()}
     {#if !editing}
@@ -152,17 +177,21 @@
       {t('power.dashboard.empty')}
     </p>
   {:else}
-    <div class="flex min-h-0 flex-1 flex-col gap-3">
-      <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <span class="text-xl font-semibold tabular-nums" data-part="total">
-          {totals.metered > 0
-            ? formatWatts(totals.watts)
-            : t('power.page.noReading')}
-        </span>
-        <span class="text-muted-foreground text-xs">
-          {t('power.dashboard.on', { on: totals.on, all: rows.length })}
-        </span>
-      </div>
+    <div
+      class="flex min-h-0 flex-1 flex-col gap-3"
+      bind:clientHeight={roomPx}
+      data-part="card-body"
+    >
+      {#if !showGraph}
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <span class="text-xl font-semibold tabular-nums" data-part="total">
+            {totalText}
+          </span>
+          <span class="text-muted-foreground text-xs">
+            {t('power.dashboard.on', { on: totals.on, all: rows.length })}
+          </span>
+        </div>
+      {/if}
       {#if showGraph}
         {#if !power.carriesGraph(minutes)}
           <Skeleton class="min-h-0 w-full flex-1" />

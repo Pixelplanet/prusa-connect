@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.5 - 2026-11-19
+## 0.5.6 - 2026-11-19
 
 - Add multi-plug driver support inside a single unified extension sharing safety interlocks, auto-off cooldown, 30-minute power graph, and session/print energy tracking:
   - **Shelly Gen1 (MQTT)** with `shellies/announce` discovery, online LWT, overpower detection, and per-relay power readings.
@@ -30,6 +30,7 @@
 - Fix a new install starting with an auto-off delay of 0 seconds instead of the default 120.
 - Preserve full backwards compatibility with existing `mode: "mqtt"` and `mode: "http"` printer assignments.
 - Add unit tests in `drivers_test.go` covering all new plug drivers and legacy config compatibility, and in `host_test.go` covering the declared options, the granted port and the overview.
+- Draw right in the app's new look (Ember) as well as in 0.1.0-beta.1: the bundle now carries the style rules of the library components it uses, the settings panes pad their own content, and the dashboard card measures the room it has before it draws the graph and shows its figures in its heading while it does.
 - Hold the browser bundle to the app's own lint and formatting rules (`pnpm run check`).
 
 ## 0.4.1 - 2026-11-19

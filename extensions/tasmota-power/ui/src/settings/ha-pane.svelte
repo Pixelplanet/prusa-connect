@@ -20,6 +20,7 @@
   import { heldHost } from '../host';
   import { typed } from '../input';
   import { powerFor, type SettingsChanges } from '../power.svelte';
+  import { PANE_BODY } from './pane-body';
 
   let { saved }: { saved: SettingsResponse } = $props();
 
@@ -94,7 +95,7 @@
     description={t('power.connections.ha.description')}
     edged
   >
-    <div class="flex flex-col gap-4">
+    <div class={PANE_BODY}>
       <div class="flex flex-wrap items-center gap-2 text-xs" data-part="status">
         {#if saved.ha_configured}
           <Badge variant="success">{t('power.connections.setUp')}</Badge>

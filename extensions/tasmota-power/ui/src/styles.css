@@ -1,6 +1,17 @@
+/* The stylesheet of this module's browser half.
+
+   1. Tailwind's own names, without emitting anything
+   2. the library's theme, its utilities and its dark variant, also unemitted
+   3. the utilities this module names, and nothing else. The preflight is not
+      here: it would restyle the host page
+   4. the trees Tailwind reads class names out of: this module's own, and the
+      library's components it bundles. Those name utilities and variants of
+      their own (@md/pane:flex-row), and the host page does not style them
+      for a module, so their rules are built here as well. */
 @reference 'tailwindcss';
 @reference '@prusa/connect-ui/tokens.css';
 @layer utilities {
   @tailwind utilities;
 }
 @source './';
+@source '../node_modules/@prusa/connect-ui/dist';

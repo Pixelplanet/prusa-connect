@@ -33,6 +33,7 @@
   import LinkButton from '../link-button.svelte';
   import { settingsTabHref } from '../links';
   import { powerFor } from '../power.svelte';
+  import { PANE_BODY } from './pane-body';
   import SettingRow from './setting-row.svelte';
 
   const DEFAULT_DELAY = 120;
@@ -164,55 +165,58 @@
       description={t('power.automation.rules.description')}
       edged
     >
-      {#if saved === undefined}
-        <FaultNote fault={power.settingsFault} />
-        {#if power.settingsFault === undefined}
-          <ListingSkeleton label={t('power.automation.reading')} rows={2} />
-        {/if}
-      {:else}
-        <SettingRow
-          id={`${uid}-delay`}
-          label={t('power.automation.delay.label')}
-          description={t('power.automation.delay.hint')}
-        >
-          {#snippet control()}
-            <!-- The width is on a box of this module's own: an Input fills
+      <div class={PANE_BODY}>
+        {#if saved === undefined}
+          <FaultNote fault={power.settingsFault} />
+          {#if power.settingsFault === undefined}
+            <ListingSkeleton label={t('power.automation.reading')} rows={2} />
+          {/if}
+        {:else}
+          <SettingRow
+            id={`${uid}-delay`}
+            label={t('power.automation.delay.label')}
+            description={t('power.automation.delay.hint')}
+          >
+            {#snippet control()}
+              <!-- The width is on a box of this module's own: an Input fills
                  the box it is in. -->
-            <div class="w-24">
-              <Input
-                type="number"
-                min={0}
-                aria-labelledby={`${uid}-delay-label`}
-                aria-describedby={`${uid}-delay-description`}
-                value={delay}
-                oninput={typed((value) => (delayText = value))}
+              <div class="w-24">
+                <Input
+                  type="number"
+                  min={0}
+                  aria-labelledby={`${uid}-delay-label`}
+                  aria-describedby={`${uid}-delay-description`}
+                  value={delay}
+                  oninput={typed((value) => (delayText = value))}
+                />
+              </div>
+              <span class="text-muted-foreground text-sm">
+                {t('power.automation.seconds')}
+              </span>
+            {/snippet}
+          </SettingRow>
+          <SettingRow
+            id={`${uid}-confirm`}
+            label={t('power.automation.confirm.label')}
+            description={t('power.automation.confirm.hint')}
+          >
+            {#snippet control()}
+              <Switch
+                aria-labelledby={`${uid}-confirm-label`}
+                aria-describedby={`${uid}-confirm-description`}
+                checked={confirm}
+                onCheckedChange={(next: boolean) => (confirmChoice = next)}
               />
-            </div>
-            <span class="text-muted-foreground text-sm">
-              {t('power.automation.seconds')}
-            </span>
-          {/snippet}
-        </SettingRow>
-        <SettingRow
-          id={`${uid}-confirm`}
-          label={t('power.automation.confirm.label')}
-          description={t('power.automation.confirm.hint')}
-        >
-          {#snippet control()}
-            <Switch
-              aria-labelledby={`${uid}-confirm-label`}
-              aria-describedby={`${uid}-confirm-description`}
-              checked={confirm}
-              onCheckedChange={(next: boolean) => (confirmChoice = next)}
-            />
-          {/snippet}
-        </SettingRow>
-        {#if justSaved}
-          <Alert variant="success" data-part="saved">
-            <AlertDescription>{t('power.connections.saved')}</AlertDescription>
-          </Alert>
+            {/snippet}
+          </SettingRow>
+          {#if justSaved}
+            <Alert variant="success" data-part="saved">
+              <AlertDescription>{t('power.connections.saved')}</AlertDescription
+              >
+            </Alert>
+          {/if}
         {/if}
-      {/if}
+      </div>
 
       {#snippet actions()}
         <Button type="submit" disabled={!dirty} pending={saving}>
@@ -229,7 +233,7 @@
     })}
     edged
   >
-    <div class="flex flex-col gap-4">
+    <div class={PANE_BODY}>
       <FaultNote fault={fault ?? host.fleet.error} />
       {#if !host.fleet.loaded}
         <ListingSkeleton label={t('power.automation.reading')} rows={3} />

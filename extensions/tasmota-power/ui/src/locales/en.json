@@ -294,5 +294,6 @@
   "power.dashboard.graphLabel": "Power draw of {printers} over the last {minutes} minutes",
   "power.dashboard.quiet": "No readings yet",
   "power.dashboard.quietNote": "The graph fills in as the plugs report what they draw.",
-  "power.rights.operateShort": "Operator role needed"
+  "power.rights.operateShort": "Operator role needed",
+  "power.dashboard.figures": "{total} now · {on} of {all} on"
 }
