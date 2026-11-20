@@ -128,6 +128,18 @@
     });
   });
 
+  /** Why the printer stayed on after its last print, in words. */
+  const keptText = $derived.by((): string => {
+    if (status?.auto_off_kept === 'cancelled') {
+      return t('power.section.autoOffKept.cancelled');
+    }
+    if (status?.auto_off_kept === 'failed') {
+      return t('power.section.autoOffKept.failed');
+    }
+
+    return '';
+  });
+
   const samples = $derived(status?.power_history ?? []);
   const peak = $derived(
     samples.reduce((most, sample) => Math.max(most, sample.watts), 0),
@@ -299,6 +311,10 @@
               </Badge>
             {/if}
           {/if}
+          {#if keptText !== ''}
+            <Badge variant="outline" data-part="auto-off-kept">{keptText}</Badge
+            >
+          {/if}
           {#if !status.can_turn_off && status.lock_reason}
             <span class="text-muted-foreground text-xs" data-part="lock">
               {status.lock_reason}
@@ -306,6 +322,13 @@
           {/if}
         </div>
       </div>
+
+      {#if status.auto_off_error}
+        <Alert variant="destructive" data-part="auto-off-failed">
+          <AlertTitle>{t('power.section.autoOffFailed')}</AlertTitle>
+          <AlertDescription>{status.auto_off_error}</AlertDescription>
+        </Alert>
+      {/if}
 
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatusCard

@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.5.3")
+	release = extension.Version("0.5.4")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -572,6 +572,14 @@ type autoOffTracker struct {
 	// fired says the plug was turned off for the print before. Nothing more
 	// happens until the printer is seen printing again.
 	fired bool
+	// jobID is the print that was seen running, when the printer named it.
+	jobID string
+	// kept says why the printer stayed on after its last print: cancelled or
+	// failed. It is empty once a new print is seen.
+	kept string
+	// offFault is why the plug could not be turned off when the wait was
+	// over. The turn-off is tried again until it works.
+	offFault string
 }
 
 // skippedPrint follows the one print a person switched auto-off away for, on
@@ -579,6 +587,7 @@ type autoOffTracker struct {
 type skippedPrint struct {
 	sawPrint bool
 	ended    bool
+	jobID    string
 }
 
 type axisSample struct {
@@ -2768,6 +2777,49 @@ func (m *module) autoOffLoop(ctx context.Context) {
 	}
 }
 
+// outcomeGrace is how long a print with no recorded outcome is given before
+// it counts as finished.
+const outcomeGrace = 15 * time.Second
+
+// printEnd is how a print ended, as far as it is known.
+type printEnd int
+
+const (
+	// endUnknown is a print the printer and the server say nothing about yet.
+	endUnknown printEnd = iota
+	endFinished
+	// endNotFinished is a print that was cancelled or that failed.
+	endNotFinished
+)
+
+// printEnd says how the print jobID ended, and for one that did not finish
+// whether it was cancelled or failed. The printer's own state is read first.
+// The server's record of the last print is read only when it is that print,
+// or when the printer never named its print.
+func (s printerSafety) printEnd(jobID string) (printEnd, string) {
+	switch s.PrinterState {
+	case "FINISHED":
+		return endFinished, ""
+	case "STOPPED":
+		return endNotFinished, "cancelled"
+	case "ERROR":
+		return endNotFinished, "failed"
+	}
+
+	if jobID != "" && s.LastJobID != jobID {
+		return endUnknown, ""
+	}
+
+	switch strings.ToLower(s.LastJobOutcome) {
+	case "finished":
+		return endFinished, ""
+	case "cancelled", "failed":
+		return endNotFinished, strings.ToLower(s.LastJobOutcome)
+	}
+
+	return endUnknown, ""
+}
+
 // printing reports whether the printer runs a print. Heating or moving by hand
 // keeps a printer busy and is not a print.
 func (s printerSafety) printing() bool {
@@ -2797,6 +2849,11 @@ func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time
 	if !safety.CanTurnOff {
 		if safety.printing() {
 			tr.sawActive = true
+			tr.kept = ""
+			tr.offFault = ""
+			if safety.JobID != "" {
+				tr.jobID = safety.JobID
+			}
 		}
 		tr.finishedAt = nil
 		return false
@@ -2806,12 +2863,38 @@ func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time
 		return false
 	}
 
+	// Only a print that finished turns the printer off. After a cancelled or
+	// a failed print it stays on, and waits for the next print.
+	how, reason := safety.printEnd(tr.jobID)
+	if how == endNotFinished {
+		*tr = autoOffTracker{fired: true, kept: reason}
+		return false
+	}
+
 	if tr.finishedAt == nil {
 		at := now
 		tr.finishedAt = &at
 	}
 
-	return now.Sub(*tr.finishedAt) >= cooldown
+	// The server records how a print ended a moment after the printer stops.
+	// Until it has, the wait is at least outcomeGrace, so a short wait does
+	// not turn off a printer whose print turns out to be cancelled.
+	wait := cooldown
+	if how == endUnknown && wait < outcomeGrace {
+		wait = outcomeGrace
+	}
+
+	return now.Sub(*tr.finishedAt) >= wait
+}
+
+// noteAutoOffFault keeps why the plug could not be turned off after a print,
+// for the printer's page to show while the turn-off is tried again.
+func (m *module) noteAutoOffFault(deviceID string, err error) {
+	m.mu.Lock()
+	if tr, ok := m.trackers[deviceID]; ok {
+		tr.offFault = err.Error()
+	}
+	m.mu.Unlock()
 }
 
 // plugIsOff reports whether the printer's plug is known to be off. A plug
@@ -2874,8 +2957,17 @@ func (m *module) skippedPrintIsOver(deviceID string, safety printerSafety) bool 
 		return true
 	case safety.printing():
 		skip.sawPrint = true
+		if safety.JobID != "" {
+			skip.jobID = safety.JobID
+		}
 	case skip.sawPrint:
-		skip.ended = true
+		// A skipped print that did not finish is not used up. The choice
+		// holds for the print that is started in its place.
+		if how, _ := safety.printEnd(skip.jobID); how == endNotFinished {
+			*skip = skippedPrint{}
+		} else {
+			skip.ended = true
+		}
 	}
 
 	return false
@@ -2943,6 +3035,7 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		}
 
 		if err := m.switchDevicePower(ctx, cfg, false); err != nil {
+			m.noteAutoOffFault(deviceID, err)
 			fmt.Fprintf(os.Stderr, "%s: auto-off failed for printer %q [%s]: %v\n", logName, safety.DeviceName, deviceID, err)
 			continue
 		}
@@ -3153,6 +3246,10 @@ type statusResponse struct {
 	PrinterMoving       bool               `json:"printer_moving"`
 	AutoOffPending      bool               `json:"auto_off_pending"`
 	AutoOffRemainingSec int                `json:"auto_off_remaining_sec"`
+	// AutoOffError is why the plug could not be turned off after a print.
+	// AutoOffKept is why the printer stayed on: cancelled or failed.
+	AutoOffError string `json:"auto_off_error,omitempty"`
+	AutoOffKept  string `json:"auto_off_kept,omitempty"`
 	DefaultCooldownSec  int                `json:"default_cooldown_sec"`
 	ConfirmTurnOff      bool               `json:"confirm_turn_off"`
 	PollIntervalSec     int                `json:"poll_interval_sec"`
@@ -3191,8 +3288,10 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 	plugCopy := m.plugSnapshotLocked(cfg)
 	var pending bool
 	var remaining int
+	var offFault, kept string
 	if cfg.AutoOffAfterPrint {
 		if tr, ok := m.trackers[deviceID]; ok {
+			offFault, kept = tr.offFault, tr.kept
 			if tr.finishedAt != nil && safety.CanTurnOff {
 				pending = true
 				rem := int((time.Duration(cooldownSec)*time.Second - time.Since(*tr.finishedAt)).Seconds())
@@ -3238,6 +3337,8 @@ func (m *module) buildStatus(ctx context.Context, principal, deviceID string) (s
 		PrinterMoving:       safety.Moving,
 		AutoOffPending:      pending,
 		AutoOffRemainingSec: remaining,
+		AutoOffError:        offFault,
+		AutoOffKept:         kept,
 		DefaultCooldownSec:  s.AutoOffCooldownSec,
 		ConfirmTurnOff:      s.confirmTurnOffEnabled(),
 		PollIntervalSec:     pollIntervalSec,
