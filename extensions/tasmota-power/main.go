@@ -34,7 +34,7 @@ import (
 const (
 	name    = "tasmota-power"
 	logName = "tasmota-power-control"
-	release = extension.Version("0.5.2")
+	release = extension.Version("0.5.3")
 
 	defaultMQTTPort     = 1883
 	defaultMQTTTLSPort  = 8883
@@ -2778,12 +2778,6 @@ func (s printerSafety) printing() bool {
 // finished that print and waited out cooldown. It turns off only after a print
 // it saw, or one the printer still reports as finished.
 func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time.Duration, now time.Time) bool {
-	// A printer that is away says nothing about its print. Auto-off waits
-	// until it is back, so a lost connection never cuts the power mid-print.
-	if !safety.Connected {
-		return false
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -2791,6 +2785,13 @@ func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time
 	if !ok {
 		tr = &autoOffTracker{}
 		m.trackers[deviceID] = tr
+	}
+
+	// A printer that is away says nothing about its print, so a lost
+	// connection never cuts the power mid-print. A print already seen to be
+	// over stays over: the wait that began then runs on.
+	if !safety.Connected {
+		return tr.finishedAt != nil && now.Sub(*tr.finishedAt) >= cooldown
 	}
 
 	if !safety.CanTurnOff {
@@ -2811,6 +2812,25 @@ func (m *module) autoOffDue(deviceID string, safety printerSafety, cooldown time
 	}
 
 	return now.Sub(*tr.finishedAt) >= cooldown
+}
+
+// plugIsOff reports whether the printer's plug is known to be off. A plug
+// nothing was heard from is not known to be off.
+func (m *module) plugIsOff(cfg DeviceConfig) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	plug, ok := m.plugs[cfg.plugKey()]
+
+	return ok && plug.relayState(cfg.relayIndex()) == "OFF"
+}
+
+// forgetPrint drops what was seen of a printer's print. The printer then
+// turns off only after a print it is seen running from here on.
+func (m *module) forgetPrint(deviceID string) {
+	m.mu.Lock()
+	m.trackers[deviceID] = &autoOffTracker{fired: true}
+	m.mu.Unlock()
 }
 
 // afterAutoOff is the config once the plug was turned off after a print. The
@@ -2904,6 +2924,13 @@ func (m *module) stepAutoOff(ctx context.Context) {
 		cooldownSec := defaultCooldown
 		if cfg.CooldownSec != nil {
 			cooldownSec = *cfg.CooldownSec
+		}
+
+		// A plug that is already off has nothing left to turn off. Whatever
+		// print was followed is over, and the next one starts from nothing.
+		if m.plugIsOff(cfg) {
+			m.forgetPrint(deviceID)
+			continue
 		}
 
 		if !m.autoOffDue(deviceID, safety, time.Duration(cooldownSec)*time.Second, time.Now()) {

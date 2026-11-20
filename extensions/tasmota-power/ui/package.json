@@ -1,6 +1,6 @@
 {
   "name": "tasmota-power-ui",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "description": "The browser half of the tasmota-power module.",
   "type": "module",

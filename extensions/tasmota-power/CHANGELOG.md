@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.2 - 2026-11-19
+## 0.5.3 - 2026-11-19
 
 - Add multi-plug driver support inside a single unified extension sharing safety interlocks, auto-off cooldown, 30-minute power graph, and session/print energy tracking:
   - **Shelly Gen1 (MQTT)** with `shellies/announce` discovery, online LWT, overpower detection, and per-relay power readings.
