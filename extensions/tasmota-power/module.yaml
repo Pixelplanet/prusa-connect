@@ -3,7 +3,7 @@ title: Connect Power Control
 summary: Control and monitor smart plugs (Tasmota, Shelly Gen1/Gen2+, Zigbee2MQTT, ESPHome, OpenBeken, Generic MQTT, and Home Assistant) for printers via MQTT, Direct HTTP, or REST, with active-print power-off protection and auto-off after print.
 codeowner: Pixelplanet
 kind: sink
-version: 0.5.6
+version: 0.5.7
 license: MIT
 contract_major: 1
 openapi: openapi.json
@@ -97,6 +97,8 @@ ui:
         size: {w: 4, h: 4}
         least: {w: 2, h: 2}
         settings:
+          # Nothing picked shows every printer that has a plug, so the card
+          # needs no setting up on a server with one printer.
           - key: printers
             kind: printers
             label: Printers

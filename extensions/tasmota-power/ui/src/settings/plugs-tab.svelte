@@ -1,6 +1,7 @@
 <!--
-  The Plugs tab: every printer with the plug that switches it and what that
-  plug is doing now. A plug is set up, changed and removed from here.
+  The Plugs tab: every printer as a card, with its picture, the plug that
+  switches it and what that plug is doing now. A plug is set up, changed and
+  removed from here.
 
   A settings pane takes no props, and the host draws it with no heading, so
   the pane names itself.
@@ -9,39 +10,23 @@
   import {
     Alert,
     AlertDescription,
-    Button,
     ConfirmDialog,
-    DataRow,
     ListingSkeleton,
-    RowList,
     SettingsPane,
   } from '@prusa/connect-ui/primitives';
   import { onMount } from 'svelte';
 
-  import {
-    type DeviceConfig,
-    driverDisplayTarget,
-    effectiveDriver,
-    isDeviceConfigured,
-    relayIndexOf,
-  } from '../api';
-  import {
-    clearedConfig,
-    kindOf,
-    TRANSPORT_NAMES,
-    transportOf,
-  } from '../drivers';
+  import type { DeviceConfig } from '../api';
+  import { clearedConfig } from '../drivers';
   import FaultNote from '../fault-note.svelte';
   import RightsNote from '../rights-note.svelte';
-  import { formatWatts } from '../format';
   import { heldHost } from '../host';
   import LinkButton from '../link-button.svelte';
   import { settingsTabHref } from '../links';
-  import PlugBadge from '../plug-badge.svelte';
-  import { plugStateOf, wattsNow } from '../plug-state';
   import { powerFor } from '../power.svelte';
   import { PANE_BODY } from './pane-body';
   import PlugDialog from './plug-dialog.svelte';
+  import PlugSetupCard from './plug-setup-card.svelte';
 
   interface Target {
     id: string;
@@ -88,24 +73,6 @@
     !host.fleet.loaded ||
       (power.assignments === undefined && power.assignmentsFault === undefined),
   );
-
-  /** One line saying which plug a printer has and how it is reached. */
-  const summaryOf = (config: DeviceConfig | undefined): string => {
-    const driver = effectiveDriver(config);
-    if (driver === '' || !isDeviceConfigured(config)) {
-      return t('power.plugs.none');
-    }
-    const params = {
-      type: t(kindOf(driver).name),
-      address: driverDisplayTarget(config),
-      via: t(TRANSPORT_NAMES[transportOf(driver) ?? 'mqtt']),
-    };
-    const relay = relayIndexOf(config);
-
-    return relay > 1
-      ? t('power.plugs.summaryRelay', { ...params, relay: String(relay) })
-      : t('power.plugs.summary', params);
-  };
 
   const remove = async (): Promise<void> => {
     const target = removing;
@@ -160,68 +127,28 @@
         {t('power.plugs.noPrinters')}
       </p>
     {:else}
-      <RowList data-part="plugs">
+      <!-- The grid of the Power page's cards, so one printer does not
+           stretch across a wide page. -->
+      <ul
+        class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3"
+        data-part="plugs"
+      >
         {#each printers as printer (printer.id)}
           {@const name = printer.name || printer.id}
-          {@const config = configFor(printer.id)}
-          {@const plug = power.entry(printer.id)?.plug}
-          {@const plugState = plugStateOf(config, plug)}
-          {@const watts = wattsNow(config, plug)}
-
-          {#snippet stateCell()}
-            <span class="inline-flex items-center gap-2">
-              <PlugBadge {plugState} />
-              {#if watts !== undefined}
-                <span class="tabular-nums">{formatWatts(watts)}</span>
-              {/if}
-            </span>
-          {/snippet}
-
-          {#snippet rowActions()}
-            <div class="flex items-center gap-2">
-              {#if plugState === 'none'}
-                <Button
-                  size="sm"
-                  aria-label={t('power.plugs.setUpOf', { printer: name })}
-                  disabled={busy}
-                  onclick={() => (setting = { id: printer.id, name })}
-                >
-                  {t('power.plugs.setUp')}
-                </Button>
-              {:else}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  aria-label={t('power.plugs.changeOf', { printer: name })}
-                  disabled={busy}
-                  onclick={() => (setting = { id: printer.id, name })}
-                >
-                  {t('power.plugs.change')}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={t('power.plugs.removeOf', { printer: name })}
-                  disabled={busy}
-                  onclick={() => (removing = { id: printer.id, name })}
-                >
-                  {t('power.plugs.remove')}
-                </Button>
-              {/if}
-            </div>
-          {/snippet}
-
-          <DataRow
-            primary={name}
-            secondaryValues={[
-              stateCell,
-              plugState !== 'none' && summaryOf(config),
-            ]}
-            actions={rowActions}
-            data-printer={printer.id}
-          />
+          <li>
+            <PlugSetupCard
+              id={printer.id}
+              {name}
+              model={printer.model}
+              config={configFor(printer.id)}
+              plug={power.entry(printer.id)?.plug}
+              {busy}
+              onsetup={() => (setting = { id: printer.id, name })}
+              onremove={() => (removing = { id: printer.id, name })}
+            />
+          </li>
         {/each}
-      </RowList>
+      </ul>
     {/if}
   </div>
 </SettingsPane>

@@ -127,9 +127,6 @@
   "power.setup.end.keep": "Close",
   "power.plugs.title": "Plugs",
   "power.plugs.description": "Each printer has one plug. Connect switches it and reads how much power the printer draws.",
-  "power.plugs.none": "No plug",
-  "power.plugs.summary": "{type} · {address} · {via}",
-  "power.plugs.summaryRelay": "{type} · {address} · relay {relay} · {via}",
   "power.plugs.setUp": "Set up",
   "power.plugs.setUpOf": "Set up a plug for {printer}",
   "power.plugs.change": "Change",
@@ -295,5 +292,14 @@
   "power.dashboard.quiet": "No readings yet",
   "power.dashboard.quietNote": "The graph fills in as the plugs report what they draw.",
   "power.rights.operateShort": "Operator role needed",
-  "power.dashboard.figures": "{total} now · {on} of {all} on"
+  "power.dashboard.figures": "{total} now · {on} of {all} on",
+  "power.plugs.noneNote": "No plug yet. Set one up to switch this printer and read what it draws.",
+  "power.plugs.fact.type": "Plug",
+  "power.plugs.fact.address": "Address",
+  "power.plugs.fact.via": "Connection",
+  "power.plugs.fact.now": "Now",
+  "power.dashboard.of": "Power of {name}",
+  "power.dashboard.figuresOne": "{total} now · {state}",
+  "power.plugs.none": "No plug",
+  "power.plugs.fact.relay": "Relay"
 }

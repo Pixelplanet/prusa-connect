@@ -1,7 +1,11 @@
 <!--
   A dashboard card of what the printers draw now and which plugs are on. It
-  counts the printers a person picked in its settings, and every printer when
-  they picked none.
+  needs no setting up: it shows every printer that has a plug, and a person
+  narrows it to some printers in its settings only when they want to.
+
+  With one printer to show, which is every server with one printer, the card
+  is that printer's card: it is named after the printer and says the state of
+  its plug, as the core's temperature card is named after its printer.
 
   With room for it, the card draws each printer's power over the last minutes
   as one line, on the library's chart and over the same span the core's
@@ -26,7 +30,7 @@
   import { formatWatts } from './format';
   import { heldHost } from './host';
   import PlugBadge from './plug-badge.svelte';
-  import { plugStateOf, wattsNow } from './plug-state';
+  import { plugStateOf, STATE_LABELS, wattsNow } from './plug-state';
   import { powerFor } from './power.svelte';
   import { summaryOf } from './summary';
 
@@ -123,19 +127,31 @@
   );
   // With the graph drawn, the figures stand in the heading's second line, so
   // the graph has the height the core's temperature card gives its own.
+  /** The one printer the card shows, when it shows exactly one. */
+  const only = $derived(rows.length === 1 ? rows[0] : undefined);
   const figures = $derived(
-    t('power.dashboard.figures', {
-      total: totalText,
-      on: totals.on,
-      all: rows.length,
-    }),
+    only === undefined
+      ? t('power.dashboard.figures', {
+          total: totalText,
+          on: totals.on,
+          all: rows.length,
+        })
+      : t('power.dashboard.figuresOne', {
+          total: totalText,
+          state: t(STATE_LABELS[only.state]),
+        }),
   );
 
   const since = $derived(now - minutes * 60_000);
   const series = $derived.by((): ChartSeries[] =>
     rows.map((row) => ({
       id: row.id,
-      label: row.name,
+      // One printer is named in the card's own heading, so its line says
+      // what it draws. Under a heading a person wrote, the line names it.
+      label:
+        only !== undefined && title.trim() === ''
+          ? t('power.section.graph.series')
+          : row.name,
       points: (row.entry?.power_history ?? [])
         .map((sample) => ({ at: sample.ts * 1000, value: sample.watts }))
         .filter((point) => point.at >= since),
@@ -146,7 +162,9 @@
 
 <TilePanel
   {title}
-  fallback={t('power.dashboard.heading')}
+  fallback={only === undefined
+    ? t('power.dashboard.heading')
+    : t('power.dashboard.of', { name: only.name })}
   subline={showGraph && rows.length > 0 ? figures : scope}
 >
   {#snippet trailing()}
@@ -187,9 +205,13 @@
           <span class="text-xl font-semibold tabular-nums" data-part="total">
             {totalText}
           </span>
-          <span class="text-muted-foreground text-xs">
-            {t('power.dashboard.on', { on: totals.on, all: rows.length })}
-          </span>
+          {#if only === undefined}
+            <span class="text-muted-foreground text-xs">
+              {t('power.dashboard.on', { on: totals.on, all: rows.length })}
+            </span>
+          {:else}
+            <PlugBadge plugState={only.state} />
+          {/if}
         </div>
       {/if}
       {#if showGraph}
@@ -216,7 +238,7 @@
           />
         {/if}
       {:else}
-        {#if listed.length > 0}
+        {#if only === undefined && listed.length > 0}
           <ul class="flex min-h-0 flex-col gap-1.5" data-part="printers">
             {#each listed as row (row.id)}
               <li class="flex items-center justify-between gap-2 text-sm">
@@ -233,7 +255,7 @@
             {/each}
           </ul>
         {/if}
-        {#if more > 0}
+        {#if only === undefined && more > 0}
           <p class="text-muted-foreground text-xs" data-part="more">
             {t('power.dashboard.more', { count: more })}
           </p>
